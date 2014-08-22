@@ -108,6 +108,8 @@ import sqlite3
 import CGAT.Experiment as E
 import CGAT.IOTools as IOTools
 import CGAT.Database as Database
+import CGATPipelines.PipelineUtilities as PUtils
+
 
 ###################################################
 ###################################################
@@ -184,9 +186,16 @@ def getGenesetFasta(infile, outfile):
 def generateSailfishIndex(infile,outfile):
     ''' generate sailfish index for specified geneset '''
 
-    statement = '''sailfish index -t %(infile)s
+    tmpfile = P.getTempFilename()
+    logfile = os.path.basename(outfile) + ".log"
+    statement = ''' zcat %(infile)s > %(tmpfile)s;
+                    checkpoint;
+                    sailfish index -t %(tmpfile)s
                                   -o sailfish_index.dir
-                                  -k %(sailfish_kmer)s '''
+                                  -k %(sailfish_kmer)s 
+                    >& %(logfile)s;
+                    checkpoint;
+                    rm %(tmpfile)s '''
     P.run()
 
 
@@ -202,18 +211,132 @@ def runSailFish(infiles,outfile):
     if len(infiles) == 1:
         inputs = "-r %s" % infiles[0]
     elif len(infiles) == 2:
-        inputs = "-1 %s -2 %s" % infiles
+        inputs = "-1 <(zcat %s ) -2 <( zcat %s)" % infiles
     else:
         raise ValueError("Don't know how to handle %i input files"
                          % len(infiles))
 
     statement = ''' sailfish quant -i sailfish_index.dir 
-                                   -l %(sailfish_libtype)s
+                                   -l '%(sailfish_libtype)s'
                                    %(inputs)s
                                    -o %(track)s_sailfish.dir '''
 
     P.run()
 
+
+###################################################################
+@transform(runSailFish, 
+           regex("(.+).dir/quant.sf"),
+           r"\1.load")
+def loadSailfish(infile, outfile):
+    P.load(infile, outfile, 
+           options="--header=transcript_id,length,TPM,RPKM,KPKM,nKmers,nReads -i transcript_id")
+
+
+###################################################################
+# Start/Stop Codon profiles
+###################################################################
+
+@transform(os.path.join(PARAMS["annotations_dir"],
+                                   PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           regex("(.+)"),
+           add_inputs(loadSailfish),
+           "expressed_transcripts.gtf.gz")
+def filterExpressedTranscripts(infiles, outfile):
+    '''Filter the geneset for those genes that are expressed in 
+    HEK293 '''
+
+
+    infile = infiles[0]
+    
+    query=''' SELECT transcript_id FROM HEK293_sailfish
+              WHERE TPM > 1 '''
+
+    transcript_ids=PUtils.fetch(query)
+    
+    tmp = P.getTempFilename(dir="/ifs/scratch/")
+
+    PUtils.write(tmp, transcript_ids)
+
+    statement = '''python %(scriptsdir)s/gtf2gtf.py
+                          --filter=transcript
+                          --apply=%(tmp)s
+                          -I %(infile)s
+                          -L %(outfile)s.log
+                 | gzip -c > %(outfile)s '''
+
+    P.run()
+
+@follows(mkdir("gene_profiles.dir"))
+@transform([os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),
+            "*.bam"],
+           regex("(?:.+/)?(.+).bam"),
+           add_inputs(filterExpressedTranscripts),
+           r"gene_profiles.dir/\1.CDS_profile.log")
+def calculateCDSProfiles(infiles, outfile):
+    ''' Some theory suggests that CHTOP might interact with a
+    complex that binds near to the stop codon and methylates
+    adenosine. Test this by seeing if ChTOP localises near
+    the stop codon '''
+
+    job_options = "-l mem_free=15G"
+    bamfile, gtffile = infiles
+    outfile = P.snip(outfile, ".CDS_profile.log")
+    statement = '''python %(scriptsdir)s/bam2geneprofile.py
+                          --method=utrprofile
+                          --bamfile=%(bamfile)s
+                          --gtffile=<(zcat %(gtffile)s | grep protein_codin)
+                          --normalization=total-max
+                          --base-accuracy
+                          --normalize-profile=area
+                          --scale-flank-length=1
+                          --resolution-downstream=1000
+                          --resolution-upstream=1000
+                          --resolution-upstream-utr=200
+                          --resolution-downstream-utr=700
+                          --output-filename-pattern=%(outfile)s.%%s
+                          --log=%(outfile)s.CDS_profile.log 
+                          --output-all-profiles '''
+
+    P.run()
+
+###################################################################
+@follows(mkdir("gene_profiles.dir"))
+@transform([os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),
+           "*.bam"],
+           regex("(?:.+/)?(.+).bam"),
+           add_inputs(filterExpressedTranscripts),
+           r"gene_profiles.dir/\1.tssprofile.log")
+def calculateSTOPProfiles(infiles, outfile):
+    ''' Some theory suggests that CHTOP might interact with a
+    complex that binds near to the stop codon and methylates
+    adenosine. Test this by seeing if ChTOP localises near
+    the stop codon '''
+
+    job_options = "-l mem_free=15G"
+    bamfile, gtffile = infiles
+    outfile = P.snip(outfile, ".tssprofile.log")
+    statement = '''python %(scriptsdir)s/bam2geneprofile.py
+                          --method=tssprofile
+                          --bamfile=%(bamfile)s
+                          --gtffile=<(zcat %(gtffile)s | awk '$3=="CDS"' | sed 's/CDS/exon/')
+                          --normalization=total-sum
+                          --base-accuracy
+                          --normalize-profile=area
+                          --scale-flank-length=1
+                          --resolution-downstream=400
+                          --resolution-upstream=400
+                          --extension-inward=400
+                          --extension-outward=400
+                          --output-filename-pattern=%(outfile)s.%%s
+                          --log=%(outfile)s.tssprofile.log 
+                          --output-all-profiles '''
+
+    P.run()
+
+@follows(calculateSTOPProfiles, calculateCDSProfiles)
+def profiles():
+    pass
 
 ###################################################################
 ###################################################################
