@@ -93,7 +93,7 @@ Glossary
 ========
 
 .. glossary::
-
+  
 
 Code
 ====
@@ -105,11 +105,12 @@ import sys, glob, gzip, os, itertools, re, math, types, collections, time
 import optparse, shutil
 import sqlite3
 
+import PipelineProj028
 import CGAT.Experiment as E
 import CGAT.IOTools as IOTools
 import CGAT.Database as Database
 import CGATPipelines.PipelineUtilities as PUtils
-
+import CGATPipelines.PipelineRnaseq as PipelineRnaseq
 
 ###################################################
 ###################################################
@@ -302,7 +303,7 @@ def calculateCDSProfiles(infiles, outfile):
 
 ###################################################################
 @follows(mkdir("gene_profiles.dir"))
-@transform([os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),
+@transform( [os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),
            "*.bam"],
            regex("(?:.+/)?(.+).bam"),
            add_inputs(filterExpressedTranscripts),
@@ -334,16 +335,163 @@ def calculateSTOPProfiles(infiles, outfile):
 
     P.run()
 
+
+@subdivide(calculateCDSProfiles, 
+           regex("gene_profiles.dir/(.+-FLAG-R[0-9]+).CDS_profile.log"),
+           inputs([r"gene_profiles.dir/\1.utrprofile.profiles.tsv.gz",
+                   r"gene_profiles.dir/%s.utrprofile.profiles.tsv.gz" %
+                   P.snip(glob.glob("*.bam")[0])]),
+           [r"gene_profiles.dir/\1.rnaseq_normed.matrix.tsv.gz",
+            r"gene_profiles.dir/\1.rnaseq_normed.profile.tsv.gz"])
+def normalizedToRNASeq(infiles, outfiles):
+    ''' Normalise each bin to the corresponding bin in RNAseq data '''
+
+    logfile = P.snip(outfiles[0],"matrix.tsv.gz") + ".log"
+    PipelineProj028.normalizeIndevidualProfilesToRNASeq(
+        infiles[0],
+        infiles[1],
+        outfile_matrix=outfiles[0],
+        outfile_summary=outfiles[1],
+        pseduo_count=1,
+        submit=True,
+        logfile=logfile,
+        jobOptions="-l mem_free=10G")
+        
+
+@follows(mkdir("profile_summaries.dir"))
+@transform(calculateCDSProfiles,
+           regex("gene_profiles.dir/(.+-FLAG-R[0-9]+).CDS_profile.log"),
+           inputs(r"gene_profiles.dir/\1.utrprofile.profiles.tsv.gz"),
+           r"profile_summaries.dir/\1.region_summary.tsv.gz")
+def averageRegionsAndNorm(infile, outfile):
+    '''Average normalised counts over the regions of each transcript
+    to identify transcripts strongly bound at the 3' or 5' utr '''
+
+    PipelineProj028.averageRegions(infile,
+                                   [1000, 200, 1000, 700, 1000],
+                                   outfile,
+                                   submit=True,
+                                   logfile=outfile+".log")
+
+
+@merge(averageRegionsAndNorm,
+       "profile_summaries.load")
+def concatenateAndLoadRegionSummaries(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename="profile_summaries.dir/(.+)-FLAG-(R[0-9]+).region_summary.tsv.gz",
+                         cat="Protein,Replicate",
+                         options="-i transcript_id -i Protein -i Replicate")
+
+
+@transform(concatenateAndLoadRegionSummaries,
+           suffix(".load"),
+           ".score.tsv.gz")
+def scoreCircularCandidates(infile, outfile):
+
+    PipelineProj028.scoreCircularCandidates([1000, 200, 1000, 700, 1000],
+                                           outfile,
+                                           submit=True)
+
+
+@transform(scoreCircularCandidates,
+           suffix(".tsv.gz"),
+           ".load")
+def loadCirCandidateScores(infile, outfile):
+
+    P.load(infile, outfile, "-i transcript_id")
+
 @follows(calculateSTOPProfiles, calculateCDSProfiles)
 def profiles():
     pass
+
+
+@transform([os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),"*.bam"],
+           regex("(?:.+/)?(.+).bam"),
+           add_inputs(filterExpressedTranscripts),
+           r"\1.count.tsv.gz")
+def countExpression(infiles, outfile):
+    ''' count expressoin with feature counts'''
+
+    bamfile, annotations = infiles
+    PipelineRnaseq.runFeatureCounts(
+        annotations,
+        bamfile,
+        outfile,
+        nthreads=PARAMS['featurecounts_threads'],
+        strand=PARAMS['featurecounts_strand'],
+        options=PARAMS['featurecounts_options'])
+
+
+@merge(countExpression, "track_counts.tsv.gz")
+def mergeCounts(infiles, outfile):
+    '''Merge feature counts data into one table'''
+
+
+    infiles = " ".join(infiles)
+
+    statement=''' python %(scriptsdir)s/combine_tables.py
+                         -c 1
+                         -k 7
+                         --regex-filename='(.+).count.tsv.gz'
+                         --use-file-prefix
+                         %(infiles)s
+                         -L %(outfile)s.log
+               | gzip > %(outfile)s '''
+
+    P.run()
+
+@transform(mergeCounts, suffix(".tsv.gz"), ".load")
+def loadCounts(infile,outfile):
+
+    P.load(infile, outfile, options="-i geneid")
+
+
+@follows(mkdir("pipeclip.dir"))
+@transform(os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),
+           regex(".+/(.+).bam"),
+           r"pipeclip.dir/\1.pipeclip_out.tsv.gz")
+def runPipeClip(infile, outfile):
+    ''' Run PIPE-CLIP pipeline for comparison purposes '''
+
+
+    outfile = P.snip(outfile, ".gz")
+    statement='''module load bio/PIPE-CLIP;
+
+                 checkpoint;
+ 
+                 pipeclip -i %(infile)s
+                          -o %(outfile)s
+                          -l 10
+                          -m 100
+                          -c 3
+                          -M 0.05
+                          -C 0.05;
+         
+                checkpoint;
+
+                gzip %(outfile)s '''
+
+    P.run()
+
+
+@transform(os.path.join(PARAMS["dir_iclip"], "clusters.dir/*.bg.gz"),
+           regex(".+/(.+).bg.gz"),
+           add_inputs(filterExpressedTranscripts),
+           r"\1.cluster_stats.tsv")
+def getClusterStats( infiles, outfile):
+
+    PipelineProj028.clusterStats(infiles[0],
+                                 infiles[1],
+                                 outfile,
+                                 submit=True)
 
 ###################################################################
 ###################################################################
 ###################################################################
 ## primary targets
 ###################################################################
-@follows(  )
+@follows(profiles, countExpression  )
 def full(): pass
 
 ###################################################################
