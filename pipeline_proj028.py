@@ -359,19 +359,21 @@ def normalizedToRNASeq(infiles, outfiles):
         
 
 @follows(mkdir("profile_summaries.dir"))
-@transform(calculateCDSProfiles,
-           regex("gene_profiles.dir/(.+-FLAG-R[0-9]+).CDS_profile.log"),
-           inputs(r"gene_profiles.dir/\1.utrprofile.profiles.tsv.gz"),
+@transform(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
+           regex(".+/(.+-FLAG-R[0-9]+).bam"),
+           add_inputs(filterExpressedTranscripts),
            r"profile_summaries.dir/\1.region_summary.tsv.gz")
-def averageRegionsAndNorm(infile, outfile):
+def averageRegionsAndNorm(infiles, outfile):
     '''Average normalised counts over the regions of each transcript
     to identify transcripts strongly bound at the 3' or 5' utr '''
 
-    PipelineProj028.averageRegions(infile,
-                                   [1000, 200, 1000, 700, 1000],
-                                   outfile,
-                                   submit=True,
-                                   logfile=outfile+".log")
+    bamfile, gtffile = infiles
+    PipelineProj028.calculateRegionEnrichments(bamfile,
+                                               gtffile,
+                                               outfile,
+                                               submit=True,
+                                               jobOptions="-l mem_free=10G")
+
 
 
 @merge(averageRegionsAndNorm,
@@ -389,9 +391,8 @@ def concatenateAndLoadRegionSummaries(infiles, outfile):
            ".score.tsv.gz")
 def scoreCircularCandidates(infile, outfile):
 
-    PipelineProj028.scoreCircularCandidates([1000, 200, 1000, 700, 1000],
-                                           outfile,
-                                           submit=True)
+    PipelineProj028.scoreCircularCandidates(outfile,
+                                            submit=True)
 
 
 @transform(scoreCircularCandidates,
@@ -399,7 +400,7 @@ def scoreCircularCandidates(infile, outfile):
            ".load")
 def loadCirCandidateScores(infile, outfile):
 
-    P.load(infile, outfile, "-i transcript_id")
+    P.load(infile, outfile, "--header=transcript_id,score -i transcript_id")
 
 @follows(calculateSTOPProfiles, calculateCDSProfiles)
 def profiles():
