@@ -1,4 +1,4 @@
-################################################################################
+##########################################################################
 #
 #   MRC FGU Computational Genomics Group
 #
@@ -100,10 +100,11 @@ Code
 
 """
 from ruffus import *
-
+from ruffus.combinatorics import *
 import sys, glob, gzip, os, itertools, re, math, types, collections, time
 import optparse, shutil
 import sqlite3
+import pandas
 
 import PipelineProj028
 import CGAT.Experiment as E
@@ -111,6 +112,9 @@ import CGAT.IOTools as IOTools
 import CGAT.Database as Database
 import CGATPipelines.PipelineUtilities as PUtils
 import CGATPipelines.PipelineRnaseq as PipelineRnaseq
+import PipelineiCLIP
+import CGATPipelines.PipelineMotifs as PipelineMotifs
+import CGATPipelines.PipelineGO as PipelineGO
 
 ###################################################
 ###################################################
@@ -119,8 +123,8 @@ import CGATPipelines.PipelineRnaseq as PipelineRnaseq
 ###################################################
 
 # load options from the config file
-import CGAT.Pipeline as P
-P.getParameters( 
+import CGATPipelines.Pipeline as P
+P.getParameters(
     ["%s/pipeline.ini" % __file__[:-len(".py")],
      "../pipeline.ini",
      "pipeline.ini" ] )
@@ -128,6 +132,9 @@ P.getParameters(
 PARAMS = P.PARAMS
 PARAMS_ANNOTATIONS = P.peekParameters( PARAMS["annotations_dir"],
                                        "pipeline_annotations.py" )
+PipelineiCLIP.PARAMS = PARAMS
+PipelineMotifs.PARAMS = PARAMS
+PipelineGO.PARAMS = PARAMS
 
 ###################################################################
 ###################################################################
@@ -231,7 +238,7 @@ def runSailFish(infiles,outfile):
            r"\1.load")
 def loadSailfish(infile, outfile):
     P.load(infile, outfile, 
-           options="--header=transcript_id,length,TPM,RPKM,KPKM,nKmers,nReads -i transcript_id")
+           options="--header-names=transcript_id,length,TPM,RPKM,KPKM,nKmers,nReads -i transcript_id")
 
 
 ###################################################################
@@ -260,16 +267,17 @@ def filterExpressedTranscripts(infiles, outfile):
     PUtils.write(tmp, transcript_ids)
 
     statement = '''python %(scriptsdir)s/gtf2gtf.py
-                          --filter=transcript
-                          --apply=%(tmp)s
+                          --method=filter --filter-method=transcript
+                          --map-tsv-file=%(tmp)s
                           -I %(infile)s
                           -L %(outfile)s.log
                  | gzip -c > %(outfile)s '''
 
     P.run()
 
+###################################################################
 @follows(mkdir("gene_profiles.dir"))
-@transform([os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),
+@transform([os.path.join(PARAMS["dir_iclip"], "deduped.dir/*-FLAG-R*.bam"),
             "*.bam"],
            regex("(?:.+/)?(.+).bam"),
            add_inputs(filterExpressedTranscripts),
@@ -285,10 +293,10 @@ def calculateCDSProfiles(infiles, outfile):
     outfile = P.snip(outfile, ".CDS_profile.log")
     statement = '''python %(scriptsdir)s/bam2geneprofile.py
                           --method=utrprofile
-                          --bamfile=%(bamfile)s
-                          --gtffile=<(zcat %(gtffile)s | grep protein_codin)
-                          --normalization=total-max
-                          --base-accuracy
+                          --bam-file=%(bamfile)s
+                          --gtf-file=<(zcat %(gtffile)s | grep protein_codin)
+                          --normalize-transcript=total-max
+                          --use-base-accuracy
                           --normalize-profile=area
                           --scale-flank-length=1
                           --resolution-downstream=1000
@@ -319,10 +327,10 @@ def calculateSTOPProfiles(infiles, outfile):
     outfile = P.snip(outfile, ".tssprofile.log")
     statement = '''python %(scriptsdir)s/bam2geneprofile.py
                           --method=tssprofile
-                          --bamfile=%(bamfile)s
-                          --gtffile=<(zcat %(gtffile)s | awk '$3=="CDS"' | sed 's/CDS/exon/')
-                          --normalization=total-sum
-                          --base-accuracy
+                          --bam-file=%(bamfile)s
+                          --gtf-file=<(zcat %(gtffile)s | awk '$3=="CDS"' | sed 's/CDS/exon/')
+                          --normalize-transcript=total-sum
+                          --use-base-accuracy
                           --normalize-profile=area
                           --scale-flank-length=1
                           --resolution-downstream=400
@@ -336,6 +344,7 @@ def calculateSTOPProfiles(infiles, outfile):
     P.run()
 
 
+###################################################################
 @subdivide(calculateCDSProfiles, 
            regex("gene_profiles.dir/(.+-FLAG-R[0-9]+).CDS_profile.log"),
            inputs([r"gene_profiles.dir/\1.utrprofile.profiles.tsv.gz",
@@ -355,9 +364,386 @@ def normalizedToRNASeq(infiles, outfiles):
         pseduo_count=1,
         submit=True,
         logfile=logfile,
-        jobOptions="-l mem_free=10G")
-        
+        job_options="-l mem_free=10G")
 
+###################################################################
+@follows(calculateSTOPProfiles,
+         normalizedToRNASeq)
+def normalised_profiles():
+    pass
+
+
+###################################################################
+# Single Vs Multi Exon genes
+###################################################################
+@originate("single_exon_genes.tsv")
+def getSingleExonGenes(outfile):
+    '''Generate a list of genes that have only one exon'''
+    
+    statement = ''' SELECT ti.gene_id
+                    FROM
+                       annotations.exon_stats as es
+                    INNER JOIN annotations.transcript_info as ti
+                       ON ti.transcript_id = es.transcript_id
+                    GROUP BY ti.gene_id
+                    HAVING MAX(nval) = 1 '''
+
+    results = PUtils.fetch(statement, connect())
+    PUtils.write(outfile, results)
+
+
+###################################################################
+@transform(filterExpressedTranscripts,
+           suffix(".gtf.gz"),
+           add_inputs(getSingleExonGenes),
+           ".single_exon.gtf.gz")
+def getSingleExonGeneModels(infiles, outfile):
+    '''Filter out the single exon genes from the list of expressed
+    gene models'''
+
+    gtffile, genelist = infiles
+
+    statement = ''' python %(scriptsdir)s/gtf2gtf.py
+                           --method=filter
+                           --filter-method=gene
+                           --map-tsv-file=%(genelist)s
+                           -I %(gtffile)s -L %(outfile)s.log
+                  | gzip > %(outfile)s '''
+
+    P.run()
+
+
+###################################################################
+@transform(filterExpressedTranscripts,
+           suffix(".gtf.gz"),
+           add_inputs(getSingleExonGenes),
+           ".multi_exon.gtf.gz")
+def getMultiExonGeneModels(infiles, outfile):
+    '''Filter out the single exon genes from the list of expressed
+    gene models'''
+
+    gtffile, genelist = infiles
+
+    statement = ''' python %(scriptsdir)s/gtf2gtf.py
+                           --method=filter
+                           --filter-method=gene
+                           --map-tsv-file=%(genelist)s
+                           --invert-filter
+                           -I %(gtffile)s -L %(outfile)s.log
+                  | gzip > %(outfile)s '''
+
+    P.run()
+
+
+###################################################################
+@product(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
+         formatter(".+/(?P<TRACK>.+)\.bam"),
+         [getSingleExonGeneModels, getMultiExonGeneModels],
+         formatter("expressed_transcripts.(?P<GTF>.+).gtf.gz"),
+         "gene_profiles.dir/{TRACK[0][0]}.{GTF[1][0]}.geneprofile.matrix.tsv.gz")
+def SingleVsMultiExonGeneProfiles(infiles, outfile):
+    ''' Do metagene profiles for single and multi exon genes '''
+
+    job_options = "-l mem_free=15G"
+    bamfile, gtffile = infiles
+    outfile = P.snip(outfile, ".geneprofile.matrix.tsv.gz")
+    statement = '''python %(scriptsdir)s/bam2geneprofile.py
+                          --method=geneprofile
+                          --bam-file=%(bamfile)s
+                          --gtf-file=%(gtffile)s 
+                          --normalize-transcript=total-max
+                          --use-base-accuracy
+                          --normalize-profile=area
+                          --scale-flank-length=1
+                          --resolution-cds=250
+                          --resolution-downstream=250
+                          --resolution-upstream=250
+                          --output-filename-pattern=%(outfile)s.%%s
+                          --log=%(outfile)s.log 
+                          --output-all-profiles '''
+
+    P.run()
+
+
+###################################################################
+@merge(SingleVsMultiExonGeneProfiles,
+       "single_vs_multi_exon_gene_profiles.load")
+def loadSingleVsMultiExonGeneProfiles(infiles, outfile):
+
+    P.concatenateAndLoad(infiles,
+                         outfile,
+                         regex_filename=".+/(.+)-FLAG-(R.)\.(single|multi)_exon.geneprofile.matrix.tsv.gz",
+                         cat="factor,replicate,exons",
+                         options = "-i factor -i replicate -i exons -i bin")
+
+
+###################################################################
+@subdivide(calculateCDSProfiles, 
+           regex("gene_profiles.dir/(.+-FLAG-R[0-9]+).CDS_profile.log"),
+           inputs([r"gene_profiles.dir/\1.utrprofile.profiles.tsv.gz",
+                   r"gene_profiles.dir/%s.utrprofile.profiles.tsv.gz" %
+                   P.snip(glob.glob("*.bam")[0])]),
+           [r"gene_profiles.dir/\1.single_exon.matrix.tsv.gz",
+            r"gene_profiles.dir/\1.single_exon.profile.tsv.gz"])
+def getSingleExonProfiles(infiles, outfiles):
+    ''' Normalise each bin to the corresponding bin in RNAseq data '''
+
+    logfile = P.snip(outfiles[0],"matrix.tsv.gz") + ".log"
+    PipelineProj028.getSingleExonProfiles(
+        infiles[0],
+        infiles[1],
+        outfile_matrix=outfiles[0],
+        outfile_summary=outfiles[1],
+        annotations = PARAMS["annotations_database"],
+        pseduo_count=1,
+        submit=True,
+        logfile=logfile,
+        job_options="-l mem_free=10G")
+
+
+###################################################################
+@follows(loadSingleVsMultiExonGeneProfiles,
+         getSingleExonProfiles)
+def singleVsMultiExonGenes():
+    pass
+
+
+###################################################################
+# Transcripts binned by length
+###################################################################
+@transform(filterExpressedTranscripts,
+           suffix(".gtf.gz"),
+           ".stats.tsv.gz")
+def getExpressedTranscriptStats(infile, outfile):
+    ''' get transcript lengths for expressed transcripts to allow a
+    division into different length bins '''
+
+    statement = '''python %(scriptsdir)s/gtf2table.py
+                   -c length -I %(infile)s -L %(outfile)s.log
+                   -S %(outfile)s -r transcripts --add-gtf-source'''
+
+    P.run()
+
+
+###################################################################
+@transform(getExpressedTranscriptStats,
+           suffix(".tsv.gz"),
+           ".load")
+def loadExpressedTranscriptStats(infile, outfile):
+
+    P.load(infile, outfile, options="-i transcript_id -i sum")
+
+
+###################################################################
+@follows(loadExpressedTranscriptStats)
+@split(filterExpressedTranscripts,
+       ["expressed_transcripts.%i_outof_5.gt_?_exons.gtf.gz" % (quantile + 1) for
+        quantile in range(5)])
+def getTranscriptsBinnedByLength(infiles, outfiles):
+    '''divide transcripts into bins based on length '''
+
+    tlens = PUtils.fetch_DataFrame('''SELECT transcript_id, sum as elen, nval
+                                   FROM expressed_transcripts_stats
+                                   WHERE source = 'protein_coding' ''')
+
+    statement_template = ''' python %%(scriptsdir)s/gtf2gtf.py
+                                   --method=filter
+                                   --filter-method=transcript
+                                   -a %(id_list)s
+                                   -I %(infiles)s
+                                   -L %(outfile)s.log
+                                   -S %(outfile)s '''
+    statements = []
+
+    for exon_limit in [0,1]:
+        temp_df = tlens[tlens.nval > exon_limit]
+        temp_df["quantile"] = pandas.qcut(temp_df.elen, 5, labels=False)
+        for quantile, group in temp_df.groupby("quantile"):
+            id_list = "expressed_transcripts.%i_outof_5.gt_%i_exons.tsv" % \
+                      (int(quantile)+1, exon_limit)
+            outfile = "expressed_transcripts.%i_outof_5.gt_%i_exons.gtf.gz" % \
+                      (int(quantile)+1, exon_limit)
+            group.transcript_id.to_csv(id_list, index=False)
+            statements.append(statement_template % locals())
+    
+    P.run()
+
+
+###################################################################
+@product(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
+         formatter(".+/(?P<TRACK>.+)\.bam"),
+         getTranscriptsBinnedByLength,
+         formatter("expressed_transcripts.(?P<GTF>.+).gtf.gz"),
+         "gene_profiles.dir/{TRACK[0][0]}.{GTF[1][0]}.quantile.geneprofile.matrix.tsv.gz")
+def getBinnedExpressionProfiles(infiles, outfile):
+    '''Get gene profiles for each of five bins for gene length '''
+
+    job_options = "-l mem_free=15G"
+    bamfile, gtffile = infiles
+    outfile = P.snip(outfile, ".geneprofile.matrix.tsv.gz")
+    statement = '''python %(scriptsdir)s/bam2geneprofile.py
+                          --method=geneprofile
+                          --bam-file=%(bamfile)s
+                          --gtf-file=%(gtffile)s 
+                          --normalize-transcript=total-max
+                          --use-base-accuracy
+                          --normalize-profile=area
+                          --scale-flank-length=1
+                          --resolution-cds=250
+                          --resolution-downstream=250
+                          --resolution-upstream=250
+                          --output-filename-pattern=%(outfile)s.%%s
+                          --log=%(outfile)s.log 
+                          --output-all-profiles '''
+
+    P.run()
+
+
+###################################################################
+@merge(getBinnedExpressionProfiles, "binned_expression_profiles.load")
+def loadBinndedExpresionProfiles(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+-FLAG).([^\.]+).(.)_outof_5\.gt_(.)_exons",
+                         cat="factor,rep,quantile,exon_limit",
+                         options="-i factor -i rep -i quantile -i bin -i exon_limit")
+
+
+###################################################################
+@follows(loadBinnedExpressionProfiles)
+def quantileProfiles():
+    pass
+
+
+###################################################################
+# Exon Junction Profiles
+###################################################################
+@follows(mkdir("transcriptome.dir"))
+@transform(os.path.join(PARAMS["dir_transcriptome"],
+                        "*-FLAG-R?.*.bam"),
+           regex(".+/(.+-FLAG-R.)\..+\.bam"),
+           r"transcriptome.dir/\1.bam")
+def dedupAndSplitTranscriptome(infile, outfile):
+    '''UMI dedup the transcriptome mapping bams and split multiple 
+    alignments in the XA tag into seperate lines'''
+
+    track = P.snip(outfile, ".bam")
+    statement = '''samtools view -h %(infile)s
+                 | xa2multi.pl
+                 | samtools sort -o %(track)s.tmp.bam 
+                                 -T %(track)s.tmp
+                   2>> %(track)s.log;
+
+                   checkpoint;
+
+                   samtools index %(track)s.tmp.bam;
+
+                   checkpoint;
+
+                   python %(project_src)s/dedup_umi.py
+                          -I %(track)s.tmp.bam
+                          --cluster-umis
+                          -L %(track)s.log
+                 | samtools sort -o %(outfile)s
+                                 -T %(track)s;
+
+                   checkpoint;
+
+                   samtools index %(outfile)s
+
+                   checkpoint;
+
+                   rm %(track)s.tmp*'''
+
+    P.run()
+
+
+###################################################################
+@collate(dedupAndSplitTranscriptome,
+         regex("(.+)-FLAG-(.+).bam"),
+         r"\1-FLAG-union.bam")
+def getTranscritomeUnionBam(infiles, outfile):
+
+    infiles = " ".join(infiles)
+
+    statement = '''samtools merge
+                   %(outfile)s
+                   %(infiles)s;
+ 
+                   checkpoint;
+
+                   samtools index %(outfile)s'''
+
+
+    P.run()
+
+
+###################################################################
+@follows(mkdir("transcriptome.dir"))
+@transform(os.path.join(PARAMS["iclip_dir"],
+                        "mapping.dir/geneset.dir/reference.gtf.gz"),
+           regex(".+"),
+           r"transcriptome.dir/reference_transcriptome.gtf.gz")
+def convertGenesetToTranscriptomeCoords(infile, outfile):
+
+    PipelineProj028.convertGenesetToTranscriptomeCoords(infile, outfile)
+
+
+###################################################################
+@transform([dedupAndSplitTranscriptome,
+            getTranscritomeUnionBam],
+           regex("(.+).bam"),
+           add_inputs(convertGenesetToTranscriptomeCoords),
+           r"\1.transcriptome.exon_profile.tsv.gz")
+def getTranscriptomeExonBoundaryProfiles(infiles, outfile):
+
+    bam, gtf = infiles
+
+    PipelineProj028.exonBoundaryProfiles(bam, gtf, outfile,
+                                         submit=True,
+                                         logfile=outfile + ".log",
+                                         job_options="-l mem_free=10G")
+
+
+###################################################################
+@follows(mkdir("exon_boundary_profiles.dir"))
+@transform(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
+           regex(".+/(.+-FLAG-R[0-9]+|.+-FLAG.union).bam"),
+           add_inputs(filterExpressedTranscripts),
+           r"exon_boundary_profiles.dir/\1.exon_profile.tsv.gz")
+def getExonBoundaryProfiles(infiles, outfile):
+
+    bam, gtf = infiles
+
+    
+    PipelineProj028.exonBoundaryProfiles(bam, gtf, outfile,
+                                         submit=True,
+                                         logfile=outfile + ".log",
+                                         job_options="-l mem_free=10G")
+
+
+###################################################################
+@collate([getExonBoundaryProfiles,
+          getTranscriptomeExonBoundaryProfiles],
+         regex("(.+)/(.+-FLAG-R[0-9]|.+-FLAG.union)\.(transcriptome\.exon|exon)_profile.tsv.gz"),
+         r"\1/\3_boundary_profiles.load")
+def loadExonBoundaryProfiles(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+-FLAG).(R[0-9]|union)\..*exon_profile",
+                         cat="track,replicate",
+                         options="-i position -i replicate")
+
+
+###################################################################
+@follows(loadExonBoundaryProfiles)
+def exonBoundaryProfiles():
+    pass
+
+
+###################################################################
+# Circularisation Candidates
+###################################################################
 @follows(mkdir("profile_summaries.dir"))
 @transform(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
            regex(".+/(.+-FLAG-R[0-9]+).bam"),
@@ -372,10 +758,10 @@ def averageRegionsAndNorm(infiles, outfile):
                                                gtffile,
                                                outfile,
                                                submit=True,
-                                               jobOptions="-l mem_free=10G")
+                                               job_options="-l mem_free=1")
 
 
-
+###################################################################
 @merge(averageRegionsAndNorm,
        "profile_summaries.load")
 def concatenateAndLoadRegionSummaries(infiles, outfile):
@@ -386,6 +772,7 @@ def concatenateAndLoadRegionSummaries(infiles, outfile):
                          options="-i transcript_id -i Protein -i Replicate")
 
 
+###################################################################
 @transform(concatenateAndLoadRegionSummaries,
            suffix(".load"),
            ".score.tsv.gz")
@@ -395,26 +782,86 @@ def scoreCircularCandidates(infile, outfile):
                                             submit=True)
 
 
+###################################################################
 @transform(scoreCircularCandidates,
            suffix(".tsv.gz"),
            ".load")
 def loadCirCandidateScores(infile, outfile):
 
-    P.load(infile, outfile, "--header=transcript_id,score -i transcript_id")
+    P.load(infile, outfile,
+           "--header-names=transcript_id,score -i transcript_id")
 
-@follows(calculateSTOPProfiles, calculateCDSProfiles)
-def profiles():
+###################################################################
+@follows(loadCirCandidateScores)
+def circular_candidates():
     pass
 
 
-@transform([os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),"*.bam"],
-           regex("(?:.+/)?(.+).bam"),
-           add_inputs(filterExpressedTranscripts),
+###################################################################
+@follows(singleVsMultiExonGenes,
+         normalised_profiles,
+         quantileProfiles,
+         circular_candidates)
+def profiles():
+    pass
+
+###################################################################
+###################################################################
+###################################################################
+###################################################################
+
+###################################################################
+# Clipped Transcripts
+###################################################################
+
+@transform(os.path.join(
+               PARAMS["annotations_dir"],
+               PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           regex(".+"),
+           r"all_gene_intervals.gtf.gz")
+def mergeGeneStructures(infile, outfile):
+    '''Take the complete ensembl geneset and create single intervals'''
+
+    statement = '''python %(scriptsdir)s/gtf2gtf.py -m merge-transcripts
+                         -I %(infile)s -S %(outfile)s -L %(outfile)s.log '''
+
+    P.run()
+    
+###################################################################
+@transform(os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),
+           regex(".+/(.+).bam"),
+           add_inputs(os.path.join(
+               PARAMS["annotations_dir"],
+               PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
            r"\1.count.tsv.gz")
-def countExpression(infiles, outfile):
+def count_clipped_transcripts(infiles, outfile):
+    '''count number of clip tags in each transript. Tags may be in introns,
+    or exons, or take complete interval over gene area. Make stranded and
+    allow overlaps'''
+
+    bamfile, annotations = infiles
+
+    PipelineRnaseq.runFeatureCounts(
+        annotations,
+        bamfile,
+        outfile,
+        nthreads=PARAMS['featurecounts_threads'],
+        strand=1,
+        options=PARAMS['featurecounts_options'] + ' -O')
+
+
+###################################################################
+@transform("*.bam",
+           regex("(.+).bam"),
+           add_inputs(os.path.join(
+               PARAMS["annotations_dir"],
+               PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           r"\1.count.tsv.gz")
+def countRNAExpression(infiles, outfile):
     ''' count expressoin with feature counts'''
 
     bamfile, annotations = infiles
+        
     PipelineRnaseq.runFeatureCounts(
         annotations,
         bamfile,
@@ -424,10 +871,11 @@ def countExpression(infiles, outfile):
         options=PARAMS['featurecounts_options'])
 
 
-@merge(countExpression, "track_counts.tsv.gz")
+###################################################################
+@merge([countRNAExpression, count_clipped_transcripts],
+       "track_counts.tsv.gz")
 def mergeCounts(infiles, outfile):
     '''Merge feature counts data into one table'''
-
 
     infiles = " ".join(infiles)
 
@@ -442,14 +890,152 @@ def mergeCounts(infiles, outfile):
 
     P.run()
 
+
+###################################################################
 @transform(mergeCounts, suffix(".tsv.gz"), ".load")
-def loadCounts(infile,outfile):
+def loadCounts(infile, outfile):
 
     P.load(infile, outfile, options="-i geneid")
 
 
-@follows(mkdir("pipeclip.dir"))
+###################################################################
+@follows(mkdir("cluster_hits"))
+@transform([os.path.join(PARAMS["iclip_dir"], "clusters.dir/*.bed.gz"),
+            getUnionClusters],
+           regex(".+/(.+).bed.gz"),
+           add_inputs(mergeGeneStructures),
+           r"cluster_hits/\1.gene_hits.tsv.gz")
+def countClustersOverlapingGenes(infiles, outfile):
+    
+    clusters, genes = infiles 
+
+    statement= '''python %(scriptsdir)s/gff2bed.py
+                         -I %(genes)s
+                         -L %(outfile)s
+                | bedtools coverage
+                  -a %(clusters)s -b stdin
+                  -counts -s
+                | cut -f4,7
+                | gzip > %(outfile)s'''
+
+    P.run()
+
+
+###################################################################
+@merge(countClustersOverlapingGenes,
+       "cluster_hits/gene_cluster_counts.tsv.gz")
+def combineGeneClusterCounts(infiles, outfile):
+
+    infiles = " ".join(infiles)
+    statement = ''' python %(scriptsdir)s/combine_tables.py
+                         -c 1
+                         -t
+                         --regex-filename='(.+).gene_hits.tsv.gz'
+                         --use-file-prefix
+                         %(infiles)s
+                         -L %(outfile)s.log
+               | gzip > %(outfile)s '''
+
+    P.run()
+
+
+###################################################################
+@transform(combineGeneClusterCounts, suffix(".tsv.gz"), ".load")
+def loadGeneClusterCounts(infile, outfile):
+
+    P.load(infile, outfile, options = "-i ID")
+
+
+###################################################################
+@follows(loadCounts, loadGeneClusterCounts)
+def transcript_counts():
+    pass
+
+
+###################################################################
+# GO
+###################################################################
+@follows(mkdir("go"), mkdir("go/clipped_genes"))
 @transform(os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),
+           regex(".+/(.+).bam"),
+           add_inputs(loadCounts),
+           r"go/clipped_genes/\1.goseq.tsv")
+def runClippedGenesGO(infiles, outfile):
+    '''Look for GO enrichments in genes clipped by each factor'''
+
+    track = re.match(".+/(.+).bam", infiles[0]).groups()[0]
+    plot_out = P.snip(outfile, ".goseq.tsv") + ".pwf.png"
+    column = P.quote(track)
+
+    statement = '''SELECT Geneid,
+                          %s as clipped,
+                          SUM(TPM) as expression
+                   FROM track_counts
+                    INNER JOIN annotations.transcript_info as ti
+                    ON ti.gene_id = track_counts.Geneid
+                    INNER JOIN HEK293_sailfish as sf
+                    ON ti.transcript_id = sf.transcript_id
+                   GROUP BY Geneid''' % column
+
+    results = PUtils.fetch_DataFrame(statement,connect())
+    results.clipped[results.clipped > 0] = 1
+    results = results.set_index("Geneid")
+
+    PipelineProj028.runGOSeq(genes=results.clipped,
+                             exprs=results.expression,
+                             outfile=outfile,
+                             pwf_plot=plot_out,
+                             submit=True,
+                             logfile=outfile + ".log")
+
+
+###################################################################
+@follows(loadGeneClusterCounts, mkdir("go"), mkdir("go/clusters"))
+@transform(countClustersOverlapingGenes,
+           regex("cluster_hits/(.+).gene_hits.tsv.gz"),
+           add_inputs(loadGeneClusterCounts),
+           r"go/clusters/\1.goseq.tsv")
+def runClustersGo(infiles, outfile):
+    '''Test go enrichments of genes hit by each of the cluster tracks'''
+
+    track = re.match(
+        "cluster_hits/(.+).gene_hits.tsv.gz", infiles[0]).groups()[0]
+    column = P.quote(track)
+
+    statement = '''SELECT ID,
+                          clusters.%s as clipped,
+                          HEK293_WT_1 as expression
+                   FROM
+                       gene_cluster_counts as clusters 
+                     INNER JOIN track_counts as counts
+                     ON clusters.ID = counts.Geneid ''' % column
+
+    results = PUtils.fetch_DataFrame(statement)
+
+    results = results.set_index("ID")
+
+    genes = results.clipped
+    genes[genes > 0] = 1
+
+    PipelineProj028.runGOSeq(genes,
+                             results.expression,
+                             outfile,
+                             "go/clusters/%s.pwf.png" % track,
+                             submit=True,
+                             logfile=outfile + ".log")
+
+
+##################################################################
+@follows(runClippedGenesGO, runClustersGo)
+def GO():
+    pass
+
+
+##################################################################
+#PIPE-CLIP
+###################################################################
+@follows(mkdir("pipeclip.dir"))
+@transform(os.path.join(PARAMS["iclip_dir"],"deduped.dir/*.bam"),
            regex(".+/(.+).bam"),
            r"pipeclip.dir/\1.pipeclip_out.tsv.gz")
 def runPipeClip(infile, outfile):
@@ -467,7 +1053,8 @@ def runPipeClip(infile, outfile):
                           -m 100
                           -c 3
                           -M 0.05
-                          -C 0.05;
+                          -C 0.05
+                          -r 0;
          
                 checkpoint;
 
@@ -476,30 +1063,1474 @@ def runPipeClip(infile, outfile):
     P.run()
 
 
-@transform(os.path.join(PARAMS["dir_iclip"], "clusters.dir/*.bg.gz"),
-           regex(".+/(.+).bg.gz"),
+##################################################################
+#Cluster optimisation
+##################################################################
+@follows(mkdir("window_size_scan.dir"))
+@split(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*-FLAG-R*.bam"),
+       regex(".+/(.+).bam"),
+       add_inputs(os.path.join(PARAMS["iclip_dir"],
+                               "mapping.dir/geneset.dir/reference.gtf.gz")),
+       [r"window_size_scan.dir/\1.%i.bed.gz" % (2**size)
+        for size in range(8)])
+def scanWindowSizes(infiles, outfiles):
+    '''Run find_significant_bases on a range of different cluster
+    window sizes to find optimal'''
+
+    bam, gtf = infiles
+
+    tempfile = P.getTempFilename(".")
+
+    statement = ''' zcat %(gtf)s |
+                     awk '$1=="chr22"' |
+                     gzip > %(tempfile)s.gtf.gz'''
+    P.run()
+
+    for outf in outfiles:
+        window_size = int(
+            re.match(".+/.+-FLAG-R[0-9]+\.([0-9]+).bed.gz",
+                     outf).groups()[0]
+        )
+        bg_file = P.snip(outf, ".bed.gz") + ".bg.gz"
+        PipelineiCLIP.callClusters(bam, tempfile + ".gtf.gz", [bg_file, outf],
+                                   window_size=window_size)
+
+    os.unlink(tempfile + ".gtf.gz")
+
+
+##################################################################
+@collate(scanWindowSizes,
+         regex("(.+-FLAG)-(R[0-9]+)\.([0-9]+).bed.gz"),
+         r"\1.reproducible.\3.bed.gz")
+def reproducibleScannedWindows(infiles, outfile):
+
+    PipelineiCLIP.callReproducibleClusters(infiles, outfile,
+                                           2)
+
+
+##################################################################
+@transform([scanWindowSizes, reproducibleScannedWindows],
+           suffix(".bed.gz"),
+           ".count")
+def countCalledWindows(infile, outfile):
+
+    statement = "zcat %(infile)s | wc -l > %(outfile)s"
+    P.run()
+
+
+##################################################################
+@merge(countCalledWindows, "window_scan.load")
+def loadWindowCounts(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+-FLAG.+)\.([0-9]+)\.count",
+                         header="track,size,count",
+                         cat="track,size",
+                         has_titles=False)
+
+
+##################################################################
+@follows(mkdir("p_threhold_scan.dir"))
+@split(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*-FLAG-R*.bam"),
+       regex(".+/(.+).bam"),
+       add_inputs(os.path.join(PARAMS["iclip_dir"],
+                               "mapping.dir/geneset.dir/reference.gtf.gz")),
+       [r"p_threhold_scan.dir/\1.%s.bed.gz" % p
+        for p in [0.001,0.01,0.05,0.1,0.2]])
+def scanPThreshes(infiles, outfiles):
+    '''Run find_significant_bases on a range of different cluster
+    window sizes to find optimal'''
+
+    bam, gtf = infiles
+
+    tempfile = P.getTempFilename(".")
+
+    statement = ''' zcat %(gtf)s |
+                     awk '$1=="chr22"' |
+                     gzip > %(tempfile)s.gtf.gz'''
+    P.run()
+
+    for outf in outfiles:
+        threshold = float(
+            re.match(".+/.+-FLAG-R[0-9]+\.(0\.[0-9]+).bed.gz",
+                     outf).groups()[0]
+        )
+        bg_file = P.snip(outf, ".bed.gz") + ".bg.gz"
+        PipelineiCLIP.callClusters(bam, tempfile + ".gtf.gz", [bg_file, outf],
+                                   pthresh=threshold)
+
+    os.unlink(tempfile + ".gtf.gz")
+
+
+##################################################################
+@collate(scanPThreshes,
+         regex("(.+-FLAG)-(R[0-9]+)\.(0\.[0-9]+).bed.gz"),
+         r"\1.reproducible.\3.bed.gz")
+def reproducibleScannedPs(infiles, outfile):
+
+    PipelineiCLIP.callReproducibleClusters(infiles, outfile,
+                                           2)
+
+
+##################################################################
+@collate(scanPThreshes,
+         regex("(.+-FLAG)-(R[0-9]+)\.(0\.[0-9]+).bed.gz"),
+         r"\1.all.\3.bed.gz")
+def allWindowsAtP(infiles, outfile):
+
+    PipelineiCLIP.callReproducibleClusters(infiles, outfile,
+                                           1)
+
+
+##################################################################
+@transform([scanPThreshes, reproducibleScannedPs,
+            allWindowsAtP],
+           suffix(".bed.gz"),
+           ".count")
+def countCalledPs(infile, outfile):
+
+    statement = "zcat %(infile)s | wc -l > %(outfile)s"
+    P.run()
+
+
+##################################################################
+@merge(countCalledPs, "p_threshold_scan.load")
+def loadPCounts(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+-FLAG)[-|\.](.+)\.(0\.[0-9]+)\.count",
+                         header="track,replicate,p,count",
+                         cat="track,replicate,p",
+                         has_titles=False)
+
+
+##################################################################
+@follows(loadWindowCounts, loadPCounts)
+def clusterOptimisaiton():
+    pass
+
+
+##################################################################
+# No FlipIn clusters
+##################################################################
+@transform(os.path.join(PARAMS["iclip_dir"], "clusters.dir",
+                        "*.reproducible.bed.gz"),
+           regex(".+/clusters.dir/([^(?:FlipIn)].+-FLAG.reproducible).bed.gz"),
+           add_inputs(os.path.join(PARAMS["iclip_dir"], "clusters.dir",
+                                   "FlipIn-FLAG.reproducible.bed.gz")),
+           r"clusters.dir/\1.no_flipin.bed.gz")
+def removeFlipInFromClusters(infiles, outfile):
+    ''' Remove clusters that overlap with a reproducible
+    FlipIn cluster '''
+
+    sample, flipin = infiles
+    statement = '''bedtools intersect -a %(sample)s -b %(flipin)s
+                                      -v
+                 | sort -k1,1 -k2,2n
+                 | gzip > %(outfile)s '''
+
+    P.run()
+
+
+##################################################################
+@merge(removeFlipInFromClusters,
+       "clusters.dir/no_flipin_cluster_counts.tsv")
+def countNoFlipInClusters(infiles, outfile):
+
+    with IOTools.openFile(outfile, "w") as outf:
+        outf.write("track\tcount\n")
+        for infile in infiles:
+            track = re.match(".+/(.+).no_flipin.bed.gz", infile).groups()[0]
+            num = IOTools.getNumLines(infile)
+
+            outf.write("%s\t%s\n" % (track, num))
+
+
+##################################################################
+@transform(countNoFlipInClusters, suffix(".tsv"),
+           ".load")
+def loadNoFlipInClusterCounts(infile, outfile):
+
+    P.load(infile, outfile)
+
+
+##################################################################
+@transform(removeFlipInFromClusters,
+           suffix(".bed.gz"),
+           add_inputs(os.path.join(PARAMS["iclip_dir"], "reference.context.bed.gz")),
+           ".context_stats")
+def getNoFlipInContextStats(infiles, outfile):
+
+    clusters, context = infiles
+    tmp = P.getTempFilename
+
+    statement = '''python %(scriptsdir)s/bam_vs_bed.py
+                          -a %(clusters)s
+                          -b %(context)s
+                           -S %(outfile)s
+                           -L %(outfile)s.log '''
+
+    P.run()
+
+
+##################################################################
+@merge(getNoFlipInContextStats, "clusters.dir/no_flipin_context_stats.load")
+def loadNoFlipInContextStats(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+)-FLAG.reproducible.no_flipin.context_stats",
+                         options = "-i category")
+
+
+##################################################################
+@follows(loadNoFlipInContextStats,
+         loadNoFlipInClusterCounts)
+def no_flipin_clusters():
+    pass
+
+
+##################################################################
+# Methylation
+##################################################################
+@transform(PARAMS["external_methylation_sites"],
+           regex("(.+)"),
+           "methylation_sites.bed")
+def liftOverMethylationSites(infile, outfile):
+
+    statement = '''liftOver <( cat %(infile)s | grep -P "^chr" )
+                            /ifs/mirror/ucsc/hg18/liftOver/hg18ToHg19.over.chain.gz
+                            %(outfile)s
+                            %(outfile)s.unmapped'''
+
+    P.run()
+
+
+##################################################################
+@transform(liftOverMethylationSites,
+           regex("(.+)"),
            add_inputs(filterExpressedTranscripts),
-           r"\1.cluster_stats.tsv")
-def getClusterStats( infiles, outfile):
+           "methylated_genes.tsv.gz")
+def getGenesWithMethylation(infiles, outfile):
 
-    PipelineProj028.clusterStats(infiles[0],
-                                 infiles[1],
-                                 outfile,
-                                 submit=True)
+    methylation, reference = infiles
+
+    statement = '''zcat %(reference)s
+                  
+                  | python %(scriptsdir)s/gff2bed.py --is-gtf
+                  | bedtools intersect -a stdin -b %(methylation)s -wa
+                  | cut -f4
+                  | sort -u
+                  | gzip > %(outfile)s'''
+    P.run()
+
+
+###################################################################
+@transform(getGenesWithMethylation, suffix(".tsv.gz"),
+           ".load")
+def loadMethylatedGenes(infile, outfile):
+
+    P.load(infile, outfile, options="-H gene_id -i gene_id")
+
+
+###################################################################
+@follows(loadMethylatedGenes)
+def methylation():
+    pass 
 
 ###################################################################
 ###################################################################
+# tRNAs
 ###################################################################
-## primary targets
+@follows(mkdir("trnas.dir"))
+@split(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*-FLAG-R*.bam"),
+       regex(".+/(.+).bam"),
+       add_inputs(PARAMS["trna_annotations"]),
+       [r"trnas.dir/\1.clusters.bg.gz",
+        r"trnas.dir/\1.clusters.bed.gz"])
+def calltRNAClusters(infiles, outfiles):
+    '''Call significant clusters on tRNAs'''
+
+    bam, gtf = infiles
+    PipelineiCLIP.callClusters(bam, gtf, outfiles)
+
+
 ###################################################################
-@follows(profiles, countExpression  )
-def full(): pass
+@collate(calltRNAClusters,
+         regex("(.+/.+\-FLAG)-(.+)\.bed.gz"),
+         r"\1.reproducible.bed.gz")
+def callReproducibletRNAClusters(infiles, outfile):
+    
+    PipelineiCLIP.callReproducibleClusters(infiles, outfile,
+                                           PARAMS["clusters_min_reproducible"])
+   
+
+###################################################################
+@transform(callReproducibletRNAClusters,
+           regex(".+/([^(?:FlipIn)].+).reproducible.bed.gz"),
+           add_inputs("trnas.dir/FlipIn-FLAG.reproducible.bed.gz"),
+           r"trnas.dir/\1.no_flipin.bed.gz")
+def removeInputOverlappingClusters(infiles, outfile):
+    '''Remove reproducible clusters that overlap with reproducible
+    input clusters '''
+
+    sample, control = infiles
+    PipelineiCLIP.removeInputOverlappingClusters(sample, control,
+                                                 outfile)
+
+    
+###################################################################
+@merge(removeInputOverlappingClusters,
+       "trnas.dir/trnas_with_two_factors.tsv.gz")
+def findtRNAsWithTwoFactors(infiles, outfile):
+    '''Find clusters that are present in at least two factors'''
+
+    infiles = " ".join(infiles)
+    statement = '''zcat %(infiles)s
+                 | sort -k1,1 -k2,2n
+                 | python %(scriptsdir)s/bed2bed.py
+                          --method=merge
+                          --merge-min-intervals=2
+                          --merge-and-resolve-blocks
+                          -L %(outfile)s.log
+                 | cut -f4,5 
+               
+                 | sed -r 's/_[0-9]+//'
+                 | sed '1i tRNA\\tnum_factors'
+                 | gzip > %(outfile)s'''
+    P.run()
+
+
+###################################################################
+@transform(findtRNAsWithTwoFactors, suffix(".tsv.gz"),
+           ".load")
+def loadtRNAsWithTwoFactors(infile, outfile):
+
+    P.load(infile, outfile, "-i tRNA -i num_factors")
+
+
+###################################################################
+@transform(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*-FLAG-R*.bam"),
+           regex(".+/(.+).bam"),
+           add_inputs(PARAMS["trna_annotations"]),
+           r"trnas.dir/\1.counts.tsv.gz")
+def countSitesOntRNAs(infiles, outfile):
+    '''Count clip sites on tRNAs'''
+
+    bamfile, gtf = infiles
+    logfile = P.snip(outfile,".tsv.gz") + ".log"
+    statement = '''python %(project_src)s/count_clip_sites.py
+                          -I %(gtf)s
+                          -L %(logfile)s
+                          %(bamfile)s
+                  | gzip > %(outfile)s '''
+    P.run()
+
+
+###################################################################
+@merge(countSitesOntRNAs,
+       "trnas.dir/tRNA_counts.load")
+def loadtRNACounts(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename="trnas.dir/(.+-FLAG).(.+).counts.tsv.gz",
+                         cat = "factor,replicate",
+                         options = "-i tRNA -i track")
+
+
+###################################################################
+@transform(os.path.join(PARAMS["trna_annotations"]),
+           regex(".+/(.+).gtf.gz"),
+           r"trna_stats.tsv.gz")
+def gettRNAStats(infile, outfile):
+
+    logfile = P.snip(outfile, ".tsv.gz") + ".log"
+    statement = '''python %(scriptsdir)s/gtf2table.py
+                            -I %(infile)s
+                            -L %(logfile)s.log
+                            --counter=position
+                            --counter=length
+                | gzip > %(outfile)s '''
+    P.run()
+
+
+###################################################################
+@transform(gettRNAStats,
+           suffix(".tsv.gz"),
+           ".load")
+def loadtRNAStats(infile, outfile):
+
+    P.load(infile, outfile)
+
+
+###################################################################
+@transform(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*-FLAG*.bam"),
+           regex(".+/(.+).bam"),
+           add_inputs(PARAMS["trna_annotations"]),
+           r"trnas.dir/\1.profile.tsv.gz")
+def perBasetRNAProfiles(infiles, outfile):
+    '''Calculate a per base profile accross tRNAs '''
+
+    bam_file, gtf_file = infiles
+
+    PipelineProj028.tRNABaseCounts(gtf_file, bam_file,
+                                   outfile, submit=True)
+
+
+###################################################################
+@merge(perBasetRNAProfiles,
+       "trnas.dir/trna_profiles.load")
+def loadtRNAProfiles(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                          regex_filename="trnas.dir/(.+).profile.tsv.gz")       
+
+
+###################################################################
+@follows(loadtRNACounts,
+         loadtRNAStats,
+         loadtRNAsWithTwoFactors,
+         loadtRNAProfiles)
+def tRNAs():
+    pass
+
+
+##################################################################
+# Motifs
+##################################################################
+@follows(mkdir("clusters.dir"))
+@collate(os.path.join(PARAMS["iclip_dir"], "clusters.dir/*.bed.gz"),
+         regex(".+/(.+-FLAG)-R[0-9].bed.gz"),
+         r"clusters.dir/\1.union.bed.gz")
+def getUnionClusters(infiles, outfile):
+
+    PipelineiCLIP.callReproducibleClusters(infiles, outfile, 1)
+
+
+###################################################################
+@transform(getUnionClusters,
+           suffix(".bed.gz"),
+           ".fa")
+def getUnionClustersFasta(infile, outfile):
+    ''' Get repeat masked FASTA sequence for motif calling'''
+
+    statement= ''' python %(scriptsdir)s/bed2fasta.py
+                         -g %(genome_dir)s/%(genome)s
+                         -m dustmasker
+                         -I %(infile)s
+                         --use-strand
+                         --output-mode=segments
+                         -L %(outfile)s.log
+                  | sed 's/[ |\:]/_/g' > %(outfile)s '''
+
+    P.run()
+
+
+###################################################################
+# Retained Introns
+###################################################################
+@transform(os.path.join(PARAMS["iclip_dir"],
+                        "mapping.dir/geneset.dir/reference.gtf.gz"),
+           regex(".+/(.+).gtf.gz"),
+           r"biotypes.tsv.gz")
+def getRetainedIntronGeneIDs(infile, outfile):
+
+    PipelineProj028.getTranscriptTypeByGeneID(infile,
+                                              outfile,
+                                              submit=True)
+
+
+###################################################################
+@transform(getRetainedIntronGeneIDs,
+           suffix(".tsv.gz"),
+           ".load")
+def loadBiotypes(infile, outfile):
+
+    P.load(infile, outfile, options="-i gene_id -i transcript_id -i biotype")
+
+
+###################################################################
+@transform(PARAMS["external_up_regulated_genes"],
+           regex(".+/(.+).txt"),
+           r"\1.load")
+def loadRegulatedGenes(infile,outfile):
+
+    P.load(infile, outfile,
+           options = "-i EnsemblID -i EntrezGeneID -i ProbeName")
+
+
+###################################################################
+@transform(PARAMS["external_array_platform"],
+           regex(".+/(.+).tsv"),
+           r"array_platform.load")
+def loadArrayPlatform(infile, outfile):
+    ''' Need total coverage for backgruond calculation '''
+    P.load(infile, outfile,
+           options = "-i EntrezGeneID")
+
+
+###################################################################
+@follows(mkdir("retained_introns.dir"))
+@transform(os.path.join(PARAMS["iclip_dir"],
+                        "mapping.dir/geneset.dir/reference.gtf.gz"),
+           regex(".+/(.+).gtf.gz"),
+           r"retained_introns.dir/\1.retained_introns.bed.gz")
+def getRetainedIntrons(infile, outfile):
+
+    statement = '''python %(scriptsdir)s/gtf2gtf.py -I %(infile)s
+                                       -m find-retained-introns
+                | python %(scriptsdir)s/gff2bed.py --is-gtf
+                | gzip > %(outfile)s '''
+
+    P.run()
+
+
+###################################################################
+@transform([os.path.join(PARAMS["iclip_dir"],
+                        "clusters.dir/*.bed.gz"),
+            getUnionClusters, removeFlipInFromClusters],
+           regex(".+/(.+).bed.gz"),
+           add_inputs(getRetainedIntrons),
+           r"retained_introns.dir/\1.clusters.bed.gz")
+def getClustersInRetainedIntrons(infiles, outfile):
+    ''' find the set of clusters that overlap
+    retained introns'''
+
+    clusters, introns = infiles
+
+    statement = '''bedtools intersect -a %(clusters)s -b %(introns)s
+                                     -split -s
+                  | sort -k1,1 -k2,2n
+                  | bedtools merge -i stdin -s -c 4,5,6 -o collapse,sum,distinct
+                  | gzip > %(outfile)s '''
+
+    P.run()
+
+
+
+###################################################################
+@collate(os.path.join(PARAMS["iclip_dir"],
+                      "deduped.dir/*-FLAG-R*.bam"),
+         regex("(.+)-FLAG-(R.+).bam"),
+         r"\1-FLAG.union.bam")
+def getUnionBams(infiles, outfile):
+    '''Merge all bams for a factor to make a union bam,
+    link it to a reproducible bam, which will be identical '''
+
+    outfile = os.path.abspath(outfile)
+    factor = P.snip(outfile, ".union.bam")
+
+    infiles = " ".join(infiles)
+
+    statement = ''' samtools merge %(outfile)s %(infiles)s;
+                    checkpoint;
+                    ln -f -s %(outfile)s %(factor)s.reproducible.bam;
+                    checkpoint;
+                    samtools index %(outfile)s;
+                    checkpoint;
+                    samtools index %(factor)s.reproducible.bam '''
+
+    P.run()
+      
+     
+###################################################################
+@follows(mkdir("retained_introns.dir/zagros.dir"),
+         getUnionBams)
+@transform(getClustersInRetainedIntrons,
+           regex(".+/(.+).clusters.bed.gz"),
+           add_inputs(getRetainedIntrons,
+                      os.path.join(PARAMS["iclip_dir"],
+                                   r"deduped.dir/\1.bam")),
+           r"retained_introns.dir/zagros.dir/\1.bed.gz")
+def getZagrosRIClustersAndDes(infiles, outfile):
+    ''' Will output a bed file with entry all the same length, and
+    truncated as intron boundaries, also outputs a zagros DE file '''
+
+    clusters, introns, bamfile = infiles
+
+    outfiles = [outfile, P.snip(outfile, ".bed.gz") + ".des"]
+
+    PipelineProj028.getZagrosRIInputFiles(
+        clusters,
+        introns,
+        bamfile,
+        PARAMS["zagros_cluster_size"],
+        outfiles,
+        submit=True)
+
+
+###################################################################
+@transform(getZagrosRIClustersAndDes,
+           suffix(".bed.gz"),
+           ".fa")
+def getRIZagrosFasta(infile, outfile):
+    
+    statement= ''' python %(scriptsdir)s/bed2fasta.py
+                         -g %(genome_dir)s/%(genome)s
+                         -m dustmasker
+                         -I %(infile)s
+                         --use-strand
+                         
+                         -L %(outfile)s.log
+                  | sed 's/[ |\:]/_/g' > %(outfile)s '''
+
+    P.run()
+
+
+###################################################################
+@transform(getRIZagrosFasta,
+           suffix(".fa"),
+           ".str")
+def getRIZagrosStructureFile(infile, outfile):
+    
+    statement = '''thermo -o %(outfile)s %(infile)s &> %(outfile)s.log'''
+    P.run()
+
+
+###################################################################
+@transform(getRIZagrosStructureFile,
+           regex("(.+).str"),
+           add_inputs(r"\1.fa", r"\1.des"),
+           r"\1.zagros")
+def runRIZagros(infiles, outfile):
+
+    structure, sequence, des = infiles
+    statement = '''zagros
+                      -t %(structure)s
+                      -d %(des)s
+                      %(sequence)s
+                      %(zagros_options)s >
+                    %(outfile)s '''
+
+    P.run()
+
+
+###################################################################
+@follows(runRIZagros)
+def RIZagros():
+    pass
+
+
+###################################################################
+@transform([os.path.join(PARAMS["iclip_dir"], "clusters.dir/*.bed.gz"),
+            getUnionClusters],
+           regex(".+/(.+).bed.gz"),
+           add_inputs(os.path.join(PARAMS["iclip_dir"],
+                                   "mapping.dir/geneset.dir/refcoding.introns.gtf.gz")),
+           r"clusters.dir/\1_introns.bed.gz")
+def getIntronClusters(infiles, outfile):
+
+    clusters, geneset = infiles
+
+    statement = '''
+                  bedtools intersect -a %(clusters)s -b %(geneset)s
+                      -wa -f 0.5 -split
+                 | gzip > %(outfile)s'''
+
+    P.run()
+
+
+###################################################################
+@transform([os.path.join(PARAMS["iclip_dir"], "clusters.dir/*.bed.gz"),
+            getUnionClusters],
+           regex(".+/(.+).bed.gz"),
+           add_inputs(os.path.join(PARAMS["iclip_dir"],
+                                   "mapping.dir/geneset.dir/reference.gtf.gz")),
+           r"clusters.dir/\1_single_exon.bed.gz")
+def getSingleExonClusters(infiles, outfile):
+    
+    clusters, geneset = infiles
+
+    statement = ''' SELECT DISTINCT es.transcript_id as id
+                    FROM annotations.exon_stats as es
+                    INNER JOIN annotations.transcript_info as ti
+                    ON es.transcript_id = ti.transcript_id
+                    GROUP BY ti.gene_id
+                    HAVING MAX(nval) = 1 '''
+
+    tmp = P.getTempFilename(shared=True)
+    PUtils.write(tmp, PUtils.fetch(statement, connect()))
+
+    statement = ''' python %(scriptsdir)s/gtf2gtf.py
+                         -I %(geneset)s
+                         --method=filter
+                         --filter-method=transcript
+                         -a %(tmp)s
+                         -L %(outfile)s.log
+                 | sort -k1,1 -k4,4n
+                 | bedtools intersect -a %(clusters)s -b stdin
+                        -wa -f 0.5 -split
+                 | gzip > %(outfile)s'''
+
+    P.run()
+    os.unlink(tmp)
+
+
+###################################################################
+@transform(getClustersInRetainedIntrons,
+           regex("(.+).no_flipin.+"),
+           r"\1.genes.load")
+def loadGenesWithRetainedIntronClusters(infile, outfile):
+
+    tablename = P.toTable(outfile)
+    statement = ''' zcat %(infile)s
+                 | perl -lane '/(ENSG[0-9]+)/ && print $1'
+                 | python %(scriptsdir)s/csv2db.py 
+                   --table=%(tablename)s 
+                   --database=%(database)s
+                   --header-names=gene_id
+                    -i gene_ids >  %(outfile)s '''
+
+    P.run()
+
+
+@follows(getSingleExonClusters, getIntronClusters,
+         loadClustersInRetainedIntrons)
+def interval_sets():
+    pass
+
 
 ###################################################################
 ###################################################################
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           regex(".+"),
+           r"retained_introns.dir/reference_models_with_ri.gtf.gz")
+def getRetainedIntronModelsWithRIasExons(infile, outfile):
+
+    PipelineProj028.getTranscriptsPlusRetainedIntrons(infile,
+                                                      outfile)
+
+
 ###################################################################
-## primary targets
+@transform(os.path.join(
+               PARAMS["dir_external"], "sharp_detained_introns.bed.gz"),
+           regex(".+"),
+           add_inputs(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           "retained_introns.dir/detained_introns_in_gene_models.gtf.gz")
+def insertDetainedIntronsIntoTranscripts(infiles, outfile):
+
+    introns, transcripts = infiles
+    PipelineProj028.insertDetainedIntronsIntoTranscripts(transcripts, introns,
+                                                         outfile)
+
+
 ###################################################################
+@merge([insertDetainedIntronsIntoTranscripts,
+        getRetainedIntronModelsWithRIasExons],
+       "retained_introns.dir/merged_de_re_tained_intron_models.gtf.gz")
+def mergeDetainedAndRetainedIntrons(infiles, outfile):
+
+    tmp = P.getTempFilename(".")
+
+    infiles = " ".join(infiles)
+    statement = '''zcat %(infiles)s
+                 | python %(scriptsdir)s/gtf2gtf.py --method=sort
+                                                    --sort-order=gene+transcript
+                                                     -S %(tmp)s'''
+
+    P.run()
+
+    PipelineProj028.mergeDetainedAndRetainedIntrons(tmp, outfile)
+
+    os.unlink(tmp)
+
+
+###################################################################
+@follows(mkdir("retained_introns.dir/exon_counts.dir"))
+@transform(os.path.join(PARAMS["dir_external"],
+                        "stubbsRNAseq/*.bam"),
+           regex(".+/(.+_.+_R[0-9]).+.bam"),
+           add_inputs(mergeDetainedAndRetainedIntrons),
+           r"retained_introns.dir/exon_counts.dir/\1.counts.tsv.gz")
+def countRetainedIntronExons(infiles, outfile):
+    '''Count stubbs RNAseq data accross exons of genes with retained 
+    introns '''
+
+    bamfile, annotations = infiles
+
+    PipelineRnaseq.runFeatureCounts(
+        annotations,
+        bamfile,
+        outfile,
+        nthreads=PARAMS['featurecounts_threads'],
+        strand=0,
+        options=' -O -M  --minReadOverlap 5 -f')
+
+
+###################################################################
+@merge(countRetainedIntronExons,
+       "retained_introns.dir/exon_counts.dir/retained_intron_exon_counts.tsv.gz")
+def mergeRetainedIntronExonCounts(infiles, outfile):
+
+    infiles = " ".join(infiles)
+
+    statement=''' python %(scriptsdir)s/combine_tables.py
+                         -c 1,2,3,4,5,6
+                         -k 7
+                         --regex-filename='(.+).counts.tsv.gz'
+                         --use-file-prefix
+                         %(infiles)s
+                         -L %(outfile)s.log
+               | gzip > %(outfile)s '''
+
+    P.run()
+       
+
+###################################################################
+@transform(mergeRetainedIntronExonCounts,
+           suffix(".tsv.gz"),
+           ".load")
+def loadRetainedIntronExonCounts(infile, outfile):
+
+    P.load(infile, outfile,
+           "-i Geneid -i Chr -i Start -i End -i strand -i length")
+
+
+###################################################################
+@transform("*.ri_design.tsv",
+           regex("(.+).ri_design.tsv"),
+           add_inputs(mergeRetainedIntronExonCounts,
+                      mergeDetainedAndRetainedIntrons),
+           r"retained_introns.dir/\1.dexseq.tsv")
+def runDEXSeqOnRI(infiles, outfile):
+    ''' Run DEXSeq using the stubbs RNAseq and the transcript
+    modeles with retained introns '''
+
+    design, counts, models = infiles
+
+    infiles = ",".join([models, counts, design])
+    outfile = P.snip(outfile, ".tsv")
+
+    job_threads = 6
+    job_memory="10G"
+
+    statement = ''' Rscript %(project_src)s/run_dexseq.R 
+                            --infiles %(infiles)s
+                            --outfiles %(outfile)s.tsv,%(outfile)s.gtf.gz,%(outfile)s.RData
+                    &> %(outfile)s.log '''
+
+    P.run()
+
+
+###################################################################
+@jobs_limit(1)
+@transform(runDEXSeqOnRI, suffix(".tsv"),
+           ".load")
+def loadDEXSeq(infiles, outfile):
+
+    P.load(infiles, outfile, options = "-i groupID -i featureID -i padj")
+
+    tablename = P.toTable(outfile)
+    connect().executescript(''' DROP index if exists %(tablename)s_join_index;
+                                CREATE INDEX %(tablename)s_join_index
+                                   ON %(tablename)s(groupID,featureID)'''
+                            % locals())
+
+
+###################################################################
+@transform(mergeDetainedAndRetainedIntrons,
+           regex(".+"),
+           "retained_introns.dir/re_de_detained_introns.gtf.gz")
+def extractRetainedIntrons(infile, outfile):
+
+    statement = ''' zcat %(infile)s
+                 | grep -P 'exon_id \\"I[0-9]+\\";'
+                 | gzip > %(outfile)s'''
+
+    P.run()
+
+
+###################################################################
+@transform(os.path.join(PARAMS["iclip_dir"],
+                        "deduped.dir/*.bam"),
+           regex(".+/(.+-FLAG.(?:R[0-9]+|union)).bam"),
+           add_inputs(extractRetainedIntrons),
+           r"retained_introns.dir/\1.retained_intron_counts.tsv.gz")
+def quantifyRetainedIntronCLIPTags(infiles, outfile):
+    '''Count the number of CLIP tags in each reatined intron'''
+
+    bamfile, gtffile = infiles
+    statement = '''python %(project_src)s/count_clip_sites.py
+                              %(bamfile)s
+                              -I %(gtffile)s
+                              --feature=exon
+                              -S %(outfile)s'''
+
+    P.run()
+
+
+###################################################################
+@merge(quantifyRetainedIntronCLIPTags,
+       "retained_introns.dir/retained_intron_clip_tag_counts.load")
+def loadRetainedIntronCLIPTagCounts(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+).retained_intron",
+                         options="-i gene_id -i transcript_id -i exon_id")
+
+    statement = '''DROP INDEX IF EXISTS retained_intron_clip_tag_counts_joint_index;
+                   CREATE INDEX retained_intron_clip_tag_counts_joint_index 
+                          ON retained_intron_clip_tag_counts(gene_id, exon_id);'''
+
+    connect().executescript(statement)
+
+
+###################################################################
+@follows(loadDEXSeq,
+         loadRetainedIntronCLIPTagCounts)
+def differential_intron_usage():
+    pass
+
+
+###################################################################
+@follows(loadRegulatedGenes, loadArrayPlatform,
+         loadBiotypes,  differential_intron_usage)
+def retained_introns():
+    pass
+
+
+###################################################################
+@follows(RIZagros,
+         interval_sets)
+def motifs():
+    pass
+
+
+###################################################################
+# NSUN6
+###################################################################
+@follows(mkdir("nsun6.dir"))
+@transform([os.path.join(PARAMS["iclip_dir"],
+                         "clusters.dir",
+                         "*.bed.gz"),
+            "clusters.dir/*.union.bed.gz"],
+           regex(".+/([^/]+).bed.gz"),
+           r"nsun6.dir/\1.region.bed.gz")
+def getclusterRegions(infile, outfile):
+    '''Get a bed region a fixed amount around the centre of 
+    each cluster'''
+
+    PipelineProj028.extendBedIntervals(infile, outfile, 100)
+
+
+###################################################################
+@transform(os.path.join(PARAMS["nsun6_dir"], "clusters.dir",
+                        "NSun6-Endo.reproducible.bed.gz"),
+           regex(".+/(.+).bed.gz"),
+           r"\1.bed.gz")
+def recompressAndIndexNSun6(infile, outfile):
+    ''' Recompress NSun6 clusteres with bgzip and index with tabix'''
+
+
+    statement = ''' zcat %(infile)s
+                  | sort -k1,1 -k2,2n
+                  | bgzip > %(outfile)s;
+
+                  checkpoint;
+ 
+                  tabix -p bed %(outfile)s '''
+
+    P.run()
+
+
+###################################################################
+@transform(getclusterRegions,
+           suffix(".region.bed.gz"),
+           add_inputs(recompressAndIndexNSun6),
+           ".intervalprofile.matrix.tsv.gz")
+def getNSUN6IntervalProfile(infiles, outfile):
+
+    regions, clusters = infiles
+    track = P.snip(outfile, ".intervalprofile.matrix.tsv.gz")
+    statement = ''' python %(scriptsdir)s/bam2geneprofile.py
+                                         --method=intervalprofile
+                                         --bedfile=%(clusters)s
+                                         --gtf-file=<(python %(scriptsdir)s/bed2gff.py -I %(regions)s)
+                                         --resolution-cds=200
+                                         --output-filename-pattern=%(track)s.%%s
+                                     &> %(outfile)s.log '''
+
+    P.run()
+
+
+###################################################################
+@merge(getNSUN6IntervalProfile, "nsun6.dir/nsun6_interval_profiles.load")
+def loadNSUN6Profiles(infiles, outfile):
+    
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename="nsun6.dir/(.+).intervalprofile.matrix.tsv.gz",
+                         options = "-i bin -i region -i track")
+
+
+###################################################################
+#@transform(getclusterRegions,
+#           suffix(".bed.gz"),
+#           ".fasta")
+#defGetClusterRegionFasta(infile, outfile):
+
+@follows(loadNSUN6Profiles)
+def NSUN6():
+    pass
+
+
+###################################################################
+# HNRNPU1
+###################################################################
+@follows(mkdir("hnrnpu1.dir"))
+@transform(os.path.join(PARAMS["external_hnrnpu1"],
+                        "*.bed.gz"),
+           regex(".+/GSM[0-9]+_(.+)"),
+           r"hnrnpu1.dir/\1")
+def liftOverhnRNPUReads(infile, outfile):
+    ''' Sort and dedup reads, and then liftOver to hg19 '''
+
+    tmp = P.getTempFilename()
+
+    statement = '''liftOver %(infile)s
+                            /ifs/mirror/ucsc/hg18/liftOver/hg18ToHg19.over.chain.gz
+                            %(tmp)s
+                            /dev/null;
+                   checkpoint;
+
+                  sed -E  's/rnpu2?[:_][0-9]+/\\./' %(tmp)s
+                 | sort -k1,1 -k2,2n -u
+                 | bgzip > %(outfile)s;
+ 
+                   checkpoint;
+
+                   tabix -p bed %(outfile)s;
+                   
+                   checkpoint;
+
+                   rm %(tmp)s'''
+
+    P.run()
+
+
+###################################################################
+@transform(liftOverhnRNPUReads,
+           suffix(".bed.gz"),
+           add_inputs(os.path.join(PARAMS["annotations_dir"],
+                                   PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           ".geneprofile.matrix.tsv.gz")
+def hnRNPUMetagene(infiles, outfile):
+    '''Plot hnRNPU1 metagene profile'''
+
+    bedfile, gtffile = infiles
+    outfile = P.snip(outfile, ".geneprofile.matrix.tsv.gz")
+    statement = '''python %(scriptsdir)s/bam2geneprofile.py
+                          --method=geneprofile
+                          --bedfile=%(bedfile)s
+                          --gtf-file=%(gtffile)s
+                          --normalize-transcript=total-sum
+                          --use-base-accuracy
+                          --normalize-profile=area
+                          --output-filename-pattern=%(outfile)s.%%s
+                          --log=%(outfile)s.log
+                          '''
+    P.run()
+
+
+###################################################################
+@merge(hnRNPUMetagene,
+       "hnrnpu1.dir/hnrnpu1_geneprofiles.load")
+def loadhnRNPUMetagene(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+(rep[0-9])\.geneprofile",
+                         options="-i bin -i region -i region_bin")
+
+
+###################################################################
+@transform(liftOverhnRNPUReads,
+           suffix(".bed.gz"),
+           add_inputs(os.path.join(PARAMS["annotations_dir"],
+                                   PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           "wholetranscript.geneprofile.matrix.tsv.gz")
+def hnRNPUWholeTranscriptMeta(infiles, outfile):
+    '''Plot hnRNPU1 metagene profile'''
+
+    bedfile, gtffile = infiles
+    outfile = P.snip(outfile, ".geneprofile.matrix.tsv.gz")
+    statement = '''python %(scriptsdir)s/bam2geneprofile.py
+                          --method=geneprofile
+                          --bedfile=%(bedfile)s
+                          --gtf-file=<( zcat %(gtffile)s | grep exon
+                                       | python %(scriptsdir)s/gtf2gtf.py
+                                        --method=join-exons 
+                                        -L /dev/null
+                                       | sed 's/\\ttranscript\\t/\\texon\\t/')
+                          --normalize-transcript=total-sum
+                          --use-base-accuracy
+                          --normalize-profile=area
+                          --output-filename-pattern=%(outfile)s.%%s
+                          --log=%(outfile)s.log
+                          '''
+    P.run()
+
+
+###################################################################
+@merge(hnRNPUWholeTranscriptMeta,
+       "hnrnpu1.dir/hnrnpu1_wholetranscript_geneprofiles.load")
+def loadRNPUWholeTranscriptMeta(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+(rep[0-9])whole",
+                         options="-i bin -i region -i region_bin")
+
+
+###################################################################
+@transform(liftOverhnRNPUReads,
+           suffix(".bed.gz"),
+           add_inputs(os.path.join(PARAMS["iclip_dir"],
+                                   "reference.context.bed.gz")),
+           ".context_stats.tsv")
+def gethnRNPUContext(infiles, outfile):
+
+    reads, context = infiles
+    statement = '''python %(scriptsdir)s/bam_vs_bed.py
+                          -a %(reads)s
+                          -b %(context)s
+                           -S %(outfile)s
+                           -L %(outfile)s.log '''
+    P.run()
+
+
+###################################################################
+@merge(gethnRNPUContext,
+       "hnrnpu1_context_stats.load")
+def loadhnRNPUConext(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+(rep[0-9])\.",
+                         options="-i category")
+
+
+###################################################################
+@follows(mkdir("stubbsRNAseq.dir"))
+@transform(os.path.join(PARAMS["dir_external"], "stubbsRNAseq/*.bam"),
+           regex(".+/(.+)\.merged.+"),
+           add_inputs(os.path.join(
+               PARAMS["iclip_dir"],
+               "mapping.dir/geneset.dir/reference.gtf.gz")),
+           r"stubbsRNAseq.dir/\1.feature_counts.tsv.gz")
+def countStubbsRNAseq(infiles, outfile):
+
+    bamfile, annotations = infiles
+    PipelineRnaseq.runFeatureCounts(
+        annotations,
+        bamfile,
+        outfile,
+        nthreads=PARAMS['featurecounts_threads'],
+        strand=0,
+        options=PARAMS['featurecounts_options'] + ' -O -M')
+
+
+###################################################################
+@merge(countStubbsRNAseq,
+       "stubbsRNAseq.dir/stubbs_counts.tsv.gz")
+def mergeStubbsCounts(infiles, outfile):
+    '''Merge feature counts data into one table'''
+
+    infiles = " ".join(infiles)
+
+    statement=''' python %(scriptsdir)s/combine_tables.py
+                         -c 1
+                         -k 7
+                         --regex-filename='(.+).feature_counts.tsv.gz'
+                         --use-file-prefix
+                         %(infiles)s
+                         -L %(outfile)s.log
+               | gzip > %(outfile)s '''
+
+    P.run()
+
+
+###################################################################
+@transform(mergeStubbsCounts,
+           suffix(".tsv.gz"),
+           ".load")
+def loadStubbsCounts(infile, outfile):
+
+    P.load(infile, outfile, options="-i gene_id")
+
+
+###################################################################
+@transform(mergeStubbsCounts,
+           regex(".+"),
+           "stubbsRNAseq.dir/fraction_diff.deseq.tsv")
+def getNuclearLocalisation(infile, outfile):
+    '''Use DESeq to compute a relative measure of nucelar localistation
+    as the ratio of nuclear to cytoplasmic normalised counts from
+    the stubbs data '''
+
+    PipelineProj028.findNuclearLocalisation(infile, outfile)
+
+
+###################################################################
+@transform(getNuclearLocalisation,
+           suffix(".tsv"),
+           ".load")
+def loadNuclearLocalisation(infile, outfile):
+
+    P.load(infile, outfile, "-i gene_id")
+
+
+###################################################################
+@collate(os.path.join(PARAMS["dir_external"],
+                      "Fu_RNAseq/*fastq.?.gz"),
+         regex(".+/(.+).fastq.(?:[12]\.)*gz"),
+         r"hnrnpu1.dir/\1_sailfish.dir/quant.sf")
+def runSailFishFu(infiles, outfile):
+    ''' Run sailfish on any provided rnaseq files '''
+
+
+    track = re.match("(.+)_sailfish.dir/quant.sf", outfile).groups()[0]
+    if len(infiles) == 1:
+        inputs = "-r %s" % infiles[0]
+    elif len(infiles) == 2:
+        inputs = "-1 <(zcat %s ) -2 <( zcat %s)" % infiles
+    else:
+        raise ValueError("Don't know how to handle %i input files"
+                         % len(infiles))
+
+    statement = ''' sailfish quant -i sailfish_index.dir 
+                                   -l '%(sailfish_libtype)s'
+                                   %(inputs)s
+                                   -o %(track)s_sailfish.dir '''
+
+    P.run()
+
+
+###################################################################
+@merge(runSailFishFu,
+       r"hnrnpu1.dir/fuRNAseq.tsv.gz")
+def mergeSailfishFu(infiles, outfile):
+
+    headers = ",".join([re.search("Hela_(.+)_R1", inf).groups()[0]
+                        for inf in infiles])
+    infiles = " ".join(["<( tail -n +5 %s | sed 's/# //' )" % infile
+                        for infile in infiles])
+    statement = '''python %(scriptsdir)s/combine_tables.py
+                    -c 1
+                    -k 3,7
+                    --prefixes=%(headers)s
+                    --regex-filename="hnrnpu1_Hela_(.+)_R1"
+                    -L %(outfile)s.log
+                    -S %(outfile)s
+                    %(infiles)s
+           '''
+
+    P.run()
+
+
+###################################################################
+@transform(mergeSailfishFu, suffix(".tsv.gz"), ".load")
+def loadSailfishFu(infile, outfile):
+
+    P.load(infile, outfile, "-i gene_id")
+
+
+###################################################################
+@transform(loadSailfishFu,
+           suffix(".load"),
+           "_diff.deseq.tsv")
+def findhnRNPUDependentGenes(infile, outfile):
+
+    PipelineProj028.findhnRNPUDependentGenes(connect(), outfile)
+
+
+###################################################################
+@transform(findhnRNPUDependentGenes,
+           suffix(".tsv"),
+           ".load")
+def loadhnRNPDependentGenes(infile, outfile):
+
+    P.load(infile, outfile)
+
+
+###################################################################
+@follows(loadhnRNPUMetagene,
+         loadRNPUWholeTranscriptMeta,
+         loadhnRNPUConext,
+         loadStubbsCounts,
+         loadNuclearLocalisation,
+         loadhnRNPDependentGenes)
+def hnRNPU1():
+    pass
+
+
+###################################################################
+# Export
+###################################################################
+@follows(mkdir("export/hg19"))
+@transform(callReproducibletRNAClusters,
+           regex(".+/(.+).bed.gz"),
+           r"export/hg19/\1_tRNA.bigBed")
+def exporttRNAClusters(infile, outfile):
+    
+    PipelineiCLIP.clustersToBigBed(infile, outfile)
+
+
+###################################################################
+@merge(exporttRNAClusters,
+       "export/hg19/trna_trackDb.txt")
+def maketRNAClusterUCSC(infiles, outfile):
+
+    PipelineiCLIP.makeClustersUCSC(infiles, outfile, "tRNACluster",
+                                   "Clusters from tRNAs")
+
+
+###################################################################
+@follows(mkdir("export/hg19"))
+@transform(os.path.join(PARAMS["dir_external"],
+                        "stubbsRNAseq/*.bam"),
+           regex(".+/(.+_.+_R[0-9]).+"),
+           r"export/hg19/\1.bigWig")
+def stubbsRNAseqToBigWig(infile, outfile):
+
+    genome_file = os.path.join(PARAMS['annotations_dir'],"contigs.tsv")
+
+    tmp = P.getTempFilename()
+    statement = ''' genomeCoverageBed -split -bg -ibam %(infile)s 
+                                      -g %(genome_file)s > %(tmp)s 2> %(outfile)s.log;
+                    
+                    checkpoint;
+
+                    bedGraphToBigWig %(tmp)s 
+                                     %(genome_file)s 
+                                     %(outfile)s 2>>%(outfile)s.log;
+
+                    checkpoint;
+
+                    rm %(tmp)s'''
+
+    P.run()
+
+
+###################################################################
+@follows(mkdir("export/hg19"))
+@merge(stubbsRNAseqToBigWig,
+       "export/hg19/stubbs_trackDb.txt")
+def generateStubbsTrackDb(infiles, outfile):
+
+    template = '''
+       track %(track_name)s
+       parent stubbsRNAseq
+       bigDataUrl %(track_data_URL)s
+       shortLabel %(short_label)s
+       longLabel %(long_label)s
+       autoScale on
+       visibility full
+       alwaysZero on
+       maxHeightPixels 32:32:11
+       type bigWig
+       windowingFunction mean
+      '''
+
+    stanzas = []
+    for track in infiles:
+        track_name = P.snip(os.path.basename(track), ".bigWig")
+        track_data_URL = os.path.basename(track)
+        short_label = track_name
+        long_label = "RNA-seq read depth from stubbes et al for track %s" \
+                     % track_name
+        
+        stanzas.append(template % locals())
+
+    composite_stanaz = '''
+
+    track stubbsRNAseq
+    shortLabel Stubbs RNAseq
+    longLabel RNA seq depth from Stubbs et al
+    superTrack on
+   '''
+
+    output = "\n".join([composite_stanaz] + stanzas)
+
+    with IOTools.openFile(outfile, "w") as outf:
+        outf.write(output)
+
+
+###################################################################
+@merge([os.path.join(PARAMS["iclip_dir"], "export/hg19/trackDb.txt"),
+        maketRNAClusterUCSC,
+        generateStubbsTrackDb],
+       "export/hg19/trackDb.txt")
+def mergeTrackDbs(infiles, outfile):
+    
+    infiles = " ".join(infiles)
+
+    statement = "cat %(infiles)s > %(outfile)s"
+
+    P.run()
+
+
+###################################################################
+@follows(mkdir("export/hg19"))
+@transform(os.path.join(PARAMS["iclip_dir"], "export/hg19/*"),
+           regex(".+/(export/hg19/.+)"),
+           r"\1")
+def linkiCLIPtracks(infile, outfile):
+
+    if "trackDb" not in infile:
+        try:
+            os.symlink(os.path.abspath(infile), os.path.abspath(outfile))
+        except OSError:
+            os.unlink(outfile)
+            os.symlink(os.path.abspath(infile), os.path.abspath(outfile))
+
+
+###################################################################
+@originate(["export/hub.txt",
+            "export/genomes.txt"])
+def makeHubFiles(outfiles):
+
+    hub_file = '''
+    hub proj028
+    shortLabel CGAT project 28
+    longLabel All browser tracks associated with CGAT project 28
+    genomesFile genomes.txt
+    email i.sudbery@sheffield.ac.uk'''
+
+    with IOTools.openFile("export/hub.txt", "w") as outf:
+        outf.write(hub_file)
+
+    genomes_file = '''
+    genome hg19
+    trackDb hg19/trackDb.txt'''
+
+    with IOTools.openFile("export/genomes.txt", "w") as outf:
+        outf.write(genomes_file)
+
+
+###################################################################
+@follows(mergeTrackDbs,
+         linkiCLIPtracks,
+         makeHubFiles)
+def export():
+    pass
+
+
+###################################################################
+# primary targets
+###################################################################
+@follows(profiles,
+         transcript_counts,
+         GO,
+         clusterOptimisaiton,
+         no_flipin_clusters,
+         methylation,
+         tRNAs,
+         retained_introns,
+         motifs,
+         NSUN6,
+         hnRNPU1,
+         export)
+def full():
+    pass
+
 
 @follows( mkdir( "report" ) )
 def build_report():
