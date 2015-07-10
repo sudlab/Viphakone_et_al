@@ -601,7 +601,7 @@ def getBinnedExpressionProfiles(infiles, outfile):
 
 ###################################################################
 @merge(getBinnedExpressionProfiles, "binned_expression_profiles.load")
-def loadBinndedExpresionProfiles(infiles, outfile):
+def loadBinnedExpressionProfiles(infiles, outfile):
 
     P.concatenateAndLoad(infiles, outfile,
                          regex_filename=".+/(.+-FLAG).([^\.]+).(.)_outof_5\.gt_(.)_exons",
@@ -896,6 +896,16 @@ def mergeCounts(infiles, outfile):
 def loadCounts(infile, outfile):
 
     P.load(infile, outfile, options="-i geneid")
+
+
+###################################################################
+@follows(mkdir("clusters.dir"))
+@collate(os.path.join(PARAMS["iclip_dir"], "clusters.dir/*.bed.gz"),
+         regex(".+/(.+-FLAG)-R[0-9].bed.gz"),
+         r"clusters.dir/\1.union.bed.gz")
+def getUnionClusters(infiles, outfile):
+
+    PipelineiCLIP.callReproducibleClusters(infiles, outfile, 1)
 
 
 ###################################################################
@@ -1497,33 +1507,6 @@ def tRNAs():
 ##################################################################
 # Motifs
 ##################################################################
-@follows(mkdir("clusters.dir"))
-@collate(os.path.join(PARAMS["iclip_dir"], "clusters.dir/*.bed.gz"),
-         regex(".+/(.+-FLAG)-R[0-9].bed.gz"),
-         r"clusters.dir/\1.union.bed.gz")
-def getUnionClusters(infiles, outfile):
-
-    PipelineiCLIP.callReproducibleClusters(infiles, outfile, 1)
-
-
-###################################################################
-@transform(getUnionClusters,
-           suffix(".bed.gz"),
-           ".fa")
-def getUnionClustersFasta(infile, outfile):
-    ''' Get repeat masked FASTA sequence for motif calling'''
-
-    statement= ''' python %(scriptsdir)s/bed2fasta.py
-                         -g %(genome_dir)s/%(genome)s
-                         -m dustmasker
-                         -I %(infile)s
-                         --use-strand
-                         --output-mode=segments
-                         -L %(outfile)s.log
-                  | sed 's/[ |\:]/_/g' > %(outfile)s '''
-
-    P.run()
-
 
 ###################################################################
 # Retained Introns
@@ -1784,7 +1767,7 @@ def loadGenesWithRetainedIntronClusters(infile, outfile):
 
 
 @follows(getSingleExonClusters, getIntronClusters,
-         loadClustersInRetainedIntrons)
+         getClustersInRetainedIntrons)
 def interval_sets():
     pass
 

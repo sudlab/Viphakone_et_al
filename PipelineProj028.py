@@ -123,59 +123,6 @@ def getSingleExonProfiles(clip_profile_file,
                                       index_label="position")
     
 
-    
-@cluster_runnable
-def clusterStats(bedGraph_file, gtf_file, outfile):
-
-    bedGraph = pd.read_csv(IOTools.openFile(bedGraph_file),
-                           sep="\t",
-                           names=["chr","pos","q"])
-
-    bedGraph.q = bedGraph.q.replace(0, 1)
-    
-    bedGraph = bedGraph.set_index(["chr", "pos"])
-    bedGraph = bedGraph.sort_index()
-
-    num_sig = (bedGraph < 0.05).sum()
-    sig_exon_count = 0
-    sig_intron_count = 0
-    sig_gene_count = 0
-
-    for gene in GTF.flat_gene_iterator(GTF.iterator(IOTools.openFile(gtf_file))):
-        
-        introns = GTF.toIntronIntervals(gene)
-        exons = GTF.asRanges(gene)
-
-        exons = Intervals.combine(exons)
-
-        for exon in exons:
-            
-            if (bedGraph[exon[0]:exon[1]] < 0.05).sum() > 0:
-                sig_exons = True
-                break
-
-        for intron in introns:
-            if (bedGraph[gene.contig][intron[0]:intron[1]] < 0.05).sum() > 0:
-                sig_introns = True
-                break
-
-        if sig_exons:
-            sig_exon_count += 1
-
-        if sig_introns:
-            sig_intron_count += 1
-
-        if sig_introns or sig_exons:
-            sig_gene_count += 1
-
-    with IOTools.openFile(outfile, "w") as outf:
-
-        outf.write("Significant bases:\t%s" % num_sig)
-        outf.write("Significant genes:\t%s" % sig_gene_count)
-        outf.write("Genes with signfficant exons:\t%s" % sig_exon_count)
-        outf.write("Genes with significant introns:\t%s" % sig_intron_count)
-
-
 @cluster_runnable
 def averageRegions(infile, resolutions, outfile):
 
