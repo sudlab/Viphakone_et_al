@@ -210,12 +210,18 @@ def generateSailfishIndex(infile,outfile):
 ###################################################################
 @collate("*fastq*gz",
          regex("(.+).fastq.(?:[12]\.)*gz"),
+         add_inputs(generateSailfishIndex),
          r"\1_sailfish.dir/quant.sf")
-def runSailFish(infiles,outfile):
+def runSailFish(infiles, outfile):
     ''' Run sailfish on any provided rnaseq files '''
 
+    job_memory = "10G"
+
+    sf_index = os.path.dirname(infiles[-1])
+    infiles = infiles[:-1]
 
     track = re.match("(.+)_sailfish.dir/quant.sf", outfile).groups()[0]
+
     if len(infiles) == 1:
         inputs = "-r %s" % infiles[0]
     elif len(infiles) == 2:
@@ -224,7 +230,7 @@ def runSailFish(infiles,outfile):
         raise ValueError("Don't know how to handle %i input files"
                          % len(infiles))
 
-    statement = ''' sailfish quant -i sailfish_index.dir 
+    statement = ''' sailfish quant -i %(sf_index)s
                                    -l '%(sailfish_libtype)s'
                                    %(inputs)s
                                    -o %(track)s_sailfish.dir '''
@@ -1774,6 +1780,7 @@ def interval_sets():
 
 ###################################################################
 ###################################################################
+@follows(mkdir("retained_introns.dir"))
 @transform(os.path.join(PARAMS["annotations_dir"],
                         PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
            regex(".+"),
@@ -2466,6 +2473,7 @@ def linkiCLIPtracks(infile, outfile):
 
 
 ###################################################################
+@follows(mkdir("export"))
 @originate(["export/hub.txt",
             "export/genomes.txt"])
 def makeHubFiles(outfiles):
