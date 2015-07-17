@@ -81,7 +81,7 @@ def getSingleExonProfiles(clip_profile_file,
                           annotations,
                           pseduo_count=1):
 
-    statement = ''' SELECT DISTINCT es.transcript_id as id,
+    statement = ''' SELECT DISTINCT es.transcript_id as id
                     FROM exon_stats as es
                     INNER JOIN transcript_info as ti
                     ON es.transcript_id = ti.transcript_id
@@ -614,7 +614,7 @@ def extendBedIntervals(infile, outfile, halfwidth):
 
     with IOTools.openFile(outfile, "w") as outf:
         for bed in Bed.iterator(IOTools.openFile(infile)):
-            center = (bed.end-bed.start)/2
+            center = bed.start + (bed.end-bed.start)/2
             bed.start = center - halfwidth
             bed.end = center + halfwidth
             outf.write(str(bed) + "\n")

@@ -131,7 +131,9 @@ P.getParameters(
 
 PARAMS = P.PARAMS
 PARAMS_ANNOTATIONS = P.peekParameters( PARAMS["annotations_dir"],
-                                       "pipeline_annotations.py" )
+                                       "pipeline_annotations.py",
+                                       on_error_raise=True)
+
 PipelineiCLIP.PARAMS = PARAMS
 PipelineMotifs.PARAMS = PARAMS
 PipelineGO.PARAMS = PARAMS
@@ -158,7 +160,7 @@ def connect():
     Returns a database connection.
     '''
 
-    dbh = sqlite3.connect( PARAMS["database"] )
+    dbh = sqlite3.connect( PARAMS["database_name"] )
     statement = '''ATTACH DATABASE '%s' as annotations''' % (PARAMS["annotations_database"])
     cc = dbh.cursor()
     cc.execute( statement )
@@ -171,7 +173,8 @@ def connect():
 ###################################################################
 ## worker tasks
 ###################################################################
-@transform(PARAMS["annotations_geneset"],
+@transform(os.path.join(PARAMS["iclip_dir"],
+                        "mapping.dir/geneset.dir/reference.gtf.gz"),
            suffix(".gtf.gz"),
            ".fasta.gz")
 def getGenesetFasta(infile, outfile):
@@ -208,17 +211,14 @@ def generateSailfishIndex(infile,outfile):
 
 
 ###################################################################
+@follows(generateSailfishIndex)
 @collate("*fastq*gz",
          regex("(.+).fastq.(?:[12]\.)*gz"),
-         add_inputs(generateSailfishIndex),
          r"\1_sailfish.dir/quant.sf")
 def runSailFish(infiles, outfile):
     ''' Run sailfish on any provided rnaseq files '''
 
     job_memory = "10G"
-
-    sf_index = os.path.dirname(infiles[-1])
-    infiles = infiles[:-1]
 
     track = re.match("(.+)_sailfish.dir/quant.sf", outfile).groups()[0]
 
@@ -230,7 +230,7 @@ def runSailFish(infiles, outfile):
         raise ValueError("Don't know how to handle %i input files"
                          % len(infiles))
 
-    statement = ''' sailfish quant -i %(sf_index)s
+    statement = ''' sailfish quant -i sailfish_index.dir
                                    -l '%(sailfish_libtype)s'
                                    %(inputs)s
                                    -o %(track)s_sailfish.dir '''
@@ -263,10 +263,10 @@ def filterExpressedTranscripts(infiles, outfile):
 
     infile = infiles[0]
     
-    query=''' SELECT transcript_id FROM HEK293_sailfish
+    query = ''' SELECT transcript_id FROM HEK293_sailfish
               WHERE TPM > 1 '''
 
-    transcript_ids=PUtils.fetch(query)
+    transcript_ids = PUtils.fetch(query, connect())
     
     tmp = P.getTempFilename(dir="/ifs/scratch/")
 
@@ -478,9 +478,9 @@ def loadSingleVsMultiExonGeneProfiles(infiles, outfile):
 
     P.concatenateAndLoad(infiles,
                          outfile,
-                         regex_filename=".+/(.+)-FLAG-(R.)\.(single|multi)_exon.geneprofile.matrix.tsv.gz",
+                         regex_filename="(.+)-FLAG.(.+)\.(single|multi)_",
                          cat="factor,replicate,exons",
-                         options = "-i factor -i replicate -i exons -i bin")
+                         options="-i factor -i replicate -i exons -i bin")
 
 
 ###################################################################
@@ -504,7 +504,7 @@ def getSingleExonProfiles(infiles, outfiles):
         pseduo_count=1,
         submit=True,
         logfile=logfile,
-        job_options="-l mem_free=10G")
+        job_options="-l mem_free=15G")
 
 
 ###################################################################
@@ -725,7 +725,7 @@ def getExonBoundaryProfiles(infiles, outfile):
     PipelineProj028.exonBoundaryProfiles(bam, gtf, outfile,
                                          submit=True,
                                          logfile=outfile + ".log",
-                                         job_options="-l mem_free=10G")
+                                         job_memory="15G")
 
 
 ###################################################################
@@ -807,7 +807,8 @@ def circular_candidates():
 @follows(singleVsMultiExonGenes,
          normalised_profiles,
          quantileProfiles,
-         circular_candidates)
+         circular_candidates,
+         exonBoundaryProfiles)
 def profiles():
     pass
 
@@ -1026,7 +1027,7 @@ def runClustersGo(infiles, outfile):
                      INNER JOIN track_counts as counts
                      ON clusters.ID = counts.Geneid ''' % column
 
-    results = PUtils.fetch_DataFrame(statement)
+    results = PUtils.fetch_DataFrame(statement, connect())
 
     results = results.set_index("ID")
 
@@ -1576,7 +1577,7 @@ def getRetainedIntrons(infile, outfile):
 ###################################################################
 @transform([os.path.join(PARAMS["iclip_dir"],
                         "clusters.dir/*.bed.gz"),
-            getUnionClusters, removeFlipInFromClusters],
+            getUnionClusters],
            regex(".+/(.+).bed.gz"),
            add_inputs(getRetainedIntrons),
            r"retained_introns.dir/\1.clusters.bed.gz")
@@ -1981,7 +1982,7 @@ def retained_introns():
 
 
 ###################################################################
-@follows(RIZagros,
+@follows( #RIZagros,
          interval_sets)
 def motifs():
     pass
