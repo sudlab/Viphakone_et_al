@@ -124,3 +124,33 @@ class RICandidateRanking(ProjectTracker):
 
         return self.getDataFrame(statement)
 
+
+class FractionsOfDiffIntronsDetained(ProjectTracker, SQLStatementTracker):
+
+    statement = '''SELECT track, in_category, overlap, total-overlap as no_overlap
+                    FROM detained_intron_fractions'''
+
+    fields = ("track", "in_category")
+
+
+class DifferntialIntronsVsCellFraction(ProjectTracker):
+
+    pattern = "(.+)_dexseq"
+
+    def __call__(self, track):
+
+        statement = '''SELECT groupID as gene_id,
+                           featureID as exon,
+                           exons.padj as exon_padj,
+                           log2fold_Control_Alyref as exon_lfc,
+                           fractions.ALYREF_Fraction as ALYREF_Nuclear,
+                           fractions.Control_Fraction as Control_Nuclear,
+                           fractions.padj as Fraction_padj
+                       FROM %(track)s_dexseq as exons
+                       INNER JOIN stubbs_counts_edgeR as fractions
+                        ON fractions.gene_id = exons.groupID     '''
+
+        result =  self.getDataFrame(statement)
+        result = result.dropna()
+        result["exon_sig"] = ((result.exon_padj < 0.05) & (abs(result.exon_lfc) > 0.58)) * (result.exon_lfc/result.exon_lfc.abs())
+        return result

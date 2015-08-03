@@ -122,4 +122,14 @@ RNAseq density vs CLIP density vs significance
 
 
 
+Detained vs. Retained introns
+------------------------------
+
+.. report:: RetainedIntrons.FractionsOfDiffIntronsDetained
+   :render: r-ggplot
+   :groupby: all
+   :statement: aes(x=in_category, y = overlap/(overlap+no_overlap)) + geom_bar(stat="identity") + facet_wrap(~track, scale="free_y") + theme_bw() + theme(aspect.ratio=1) + xlab("Detained Intron?") + ylab("Fraction differential")
+
+   Fraction of introns in the detained category that are differential on ALyref knockdown
+
 

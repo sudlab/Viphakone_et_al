@@ -247,6 +247,86 @@ def loadSailfish(infile, outfile):
            options="--header-names=transcript_id,length,TPM,RPKM,KPKM,nKmers,nReads -i transcript_id")
 
 
+
+###################################################################
+@follows(mkdir("stubbsRNAseq.dir"))
+@transform(os.path.join(PARAMS["dir_external"], "stubbsRNAseq/*.bam"),
+           regex(".+/(.+)\.merged.+"),
+           add_inputs(os.path.join(
+               PARAMS["iclip_dir"],
+               "mapping.dir/geneset.dir/reference.gtf.gz")),
+           r"stubbsRNAseq.dir/\1.feature_counts.tsv.gz")
+def countStubbsRNAseq(infiles, outfile):
+
+    bamfile, annotations = infiles
+    PipelineRnaseq.runFeatureCounts(
+        annotations,
+        bamfile,
+        outfile,
+        nthreads=PARAMS['featurecounts_threads'],
+        strand=0,
+        options=PARAMS['featurecounts_options'] + ' -O -M')
+
+
+###################################################################
+@merge(countStubbsRNAseq,
+       "stubbsRNAseq.dir/stubbs_counts.tsv.gz")
+def mergeStubbsCounts(infiles, outfile):
+    '''Merge feature counts data into one table'''
+
+    infiles = " ".join(infiles)
+
+    statement=''' python %(scriptsdir)s/combine_tables.py
+                         -c 1
+                         -k 7
+                         --regex-filename='(.+).feature_counts.tsv.gz'
+                         --use-file-prefix
+                         %(infiles)s
+                         -L %(outfile)s.log
+               | gzip > %(outfile)s '''
+
+    P.run()
+
+
+###################################################################
+@transform(mergeStubbsCounts,
+           suffix(".tsv.gz"),
+           ".load")
+def loadStubbsCounts(infile, outfile):
+
+    P.load(infile, outfile, options="-i gene_id")
+
+
+###################################################################
+@transform(loadStubbsCounts,
+           regex("stubbsRNAseq.dir/(.+).load"),
+           inputs(r"stubbsRNAseq.dir/\1.tsv.gz"),
+           r"stubbsRNAseq.dir/\1.edgeR.tsv")
+def runStubbsFractionEdgeR(infile, outfile):
+    '''Use edgeR to calculate the distribution between cytoplasmic
+    and nucelar fractions in Control and Alyref knockdown, and the
+    significance of the difference'''
+
+    statement = '''Rscript %(project_src)s/differential_fraction.R
+                     --infiles=%(infile)s --outfiles=%(outfile)s 
+                   &> %(outfile)s.log '''
+
+    P.run()
+
+
+###################################################################
+@transform(runStubbsFractionEdgeR, suffix(".tsv"), ".load")
+def loadStubbsFractionEdgeR(infile, outfile):
+
+    P.load(infile, outfile, "-i gene_id")
+
+
+
+###################################################################
+@follows(loadStubbsFractionEdgeR,
+         loadSailfish)
+def rnaseq():
+    pass
 ###################################################################
 # Start/Stop Codon profiles
 ###################################################################
@@ -1968,6 +2048,32 @@ def loadRetainedIntronCLIPTagCounts(infiles, outfile):
 
 
 ###################################################################
+@transform(loadDEXSeq,
+           regex("retained_introns.dir/(.+).dexseq.load"),
+           inputs([r"retained_introns.dir/\1.dexseq.gtf",
+                   extractRetainedIntrons,
+                   os.path.join(
+                       PARAMS["dir_external"], "sharp_detained_introns.bed.gz")]),
+           r"retained_introns.dir/\1.detained_fraction.tsv")
+def getDetainedIntronFraction(infiles, outfile):
+
+    test_set, background, category = infiles
+    PipelineProj028.getOverlapFractions(test_set=test_set,
+                                        category=category,
+                                        background=background,
+                                        outfile=outfile)
+
+
+###################################################################
+@merge(getDetainedIntronFraction,
+       "retained_introns.dir/detained_intron_fractions.load")
+def loadDetainedIntronFractions(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+).detained_fraction.tsv")
+
+
+###################################################################
 @follows(loadDEXSeq,
          loadRetainedIntronCLIPTagCounts)
 def differential_intron_usage():
@@ -2198,54 +2304,6 @@ def loadhnRNPUConext(infiles, outfile):
                          options="-i category")
 
 
-###################################################################
-@follows(mkdir("stubbsRNAseq.dir"))
-@transform(os.path.join(PARAMS["dir_external"], "stubbsRNAseq/*.bam"),
-           regex(".+/(.+)\.merged.+"),
-           add_inputs(os.path.join(
-               PARAMS["iclip_dir"],
-               "mapping.dir/geneset.dir/reference.gtf.gz")),
-           r"stubbsRNAseq.dir/\1.feature_counts.tsv.gz")
-def countStubbsRNAseq(infiles, outfile):
-
-    bamfile, annotations = infiles
-    PipelineRnaseq.runFeatureCounts(
-        annotations,
-        bamfile,
-        outfile,
-        nthreads=PARAMS['featurecounts_threads'],
-        strand=0,
-        options=PARAMS['featurecounts_options'] + ' -O -M')
-
-
-###################################################################
-@merge(countStubbsRNAseq,
-       "stubbsRNAseq.dir/stubbs_counts.tsv.gz")
-def mergeStubbsCounts(infiles, outfile):
-    '''Merge feature counts data into one table'''
-
-    infiles = " ".join(infiles)
-
-    statement=''' python %(scriptsdir)s/combine_tables.py
-                         -c 1
-                         -k 7
-                         --regex-filename='(.+).feature_counts.tsv.gz'
-                         --use-file-prefix
-                         %(infiles)s
-                         -L %(outfile)s.log
-               | gzip > %(outfile)s '''
-
-    P.run()
-
-
-###################################################################
-@transform(mergeStubbsCounts,
-           suffix(".tsv.gz"),
-           ".load")
-def loadStubbsCounts(infile, outfile):
-
-    P.load(infile, outfile, options="-i gene_id")
-
 
 ###################################################################
 @transform(mergeStubbsCounts,
@@ -2352,6 +2410,37 @@ def hnRNPU1():
     pass
 
 
+###################################################################
+# ChTOP PolyA binding
+###################################################################
+@follows(mkdir("unmapped_polyA.dir"))
+@transform(os.path.join(PARAMS["iclip_dir"],
+                        "mapping.dir/star.dir/merged*bam"),
+           regex(".+/merged_(.+)\..+\.bam"),
+           r"unmapped_polyA.dir/\1.composition.tsv.gz")
+def getUnmappedNucleotideComp(infile, outfile):
+    '''If ChTop binds to the polyA tail, then it might pull back reads
+    that are polyA. Thus look at the nucleotide composition of unmapped
+    reads. Other factors for comparision '''
+
+    PipelineProj028.getUnmappedNucleotideComp(infile, outfile,
+                                              submit=True)
+
+
+###################################################################
+@merge(getUnmappedNucleotideComp,
+       "unmapped_polyA.dir/unmapped_composition.load")
+def loadUnmappedComposition(infile, outfile):
+
+    P.concatenateAndLoad(infile, outfile,
+                         regex_filename=".+/(.+).composition.tsv.gz",
+                         options = "-i base -i track")
+
+
+###################################################################
+@follows(loadUnmappedComposition)
+def chtop_polya():
+    pass
 ###################################################################
 # Export
 ###################################################################

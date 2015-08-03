@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import CGAT.IOTools as IOTools
 from CGATPipelines.Pipeline import cluster_runnable
+from CGATPipelines.Pipeline import toTable
 import CGATPipelines.PipelineUtilities as PUtils
 import CGAT.Experiment as E
 import CGAT.GTF as GTF
@@ -1101,3 +1102,52 @@ def convertGenesetToTranscriptomeCoords(infile, outfile):
                 outf.write(str(entry) + "\n")
 
 
+@cluster_runnable
+def getOverlapFractions(test_set, category, background, outfile):
+    ''' Takes three bed files, and outputs the fraction number of test_set in background,
+    conditional on whether there is an overlap with category or not '''
+
+    import pybedtools
+
+    test_set = pybedtools.BedTool(test_set)
+    category = pybedtools.BedTool(category)
+    background = pybedtools.BedTool(background)
+
+    cat_true = (background + category).count()
+    test_cat_true = (background + category + test_set).count()
+
+    cat_false = (background - category).count()
+    test_cat_false = (background - category + test_set).count()
+
+    with IOTools.openFile(outfile, "w") as outf:
+        outf.write("in_category\toverlap\ttotal\n")
+        outf.write("True\t%i\t%i\n" % (test_cat_true,cat_true))
+        outf.write("False\t%i\t%i\n" % (test_cat_false, cat_false))
+
+
+@cluster_runnable
+def getUnmappedNucleotideComp(infile, outfile):
+
+    bamfile = pysam.AlignmentFile(infile)
+
+    results = collections.defaultdict(int)
+    for read in bamfile.fetch(until_eof=True):
+        
+        if not read.is_unmapped:
+            continue
+            
+        composition = collections.defaultdict(int)
+        l = len(read.query_sequence)
+        for na in read.query_sequence:
+            composition[na] += 1
+            
+        for na in composition:
+            results[(str(l), na, str(composition[na]))] += 1
+
+    with IOTools.openFile(outfile, "w") as outf:
+
+        outf.write(
+            "\t".join(["read_length", "base", "count", "nreads"]) + "\n")
+
+        for (length, base, count), nreads in results.iteritems():
+            outf.write("\t".join([length, base, count, str(nreads)]) + "\n")
