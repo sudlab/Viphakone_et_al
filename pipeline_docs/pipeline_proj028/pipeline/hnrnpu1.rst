@@ -81,3 +81,34 @@ Only genes with an avearge of over 50 reads per sample in both the FuRNAseq and 
 
    Table of nuclear localised LincRNAs and expression responses to hnRNPU1 knockdown. 
 
+
+Ratio of Alyref to Nxf1 in nuclear vs cytoplamsic lincRNAs
+----------------------------------------------------------
+
+.. report:: hnrnpu.AlyrefVsChTopVsLocalisation
+   :render: r-ggplot
+   :groupby: all
+   :statement: aes(x=nuclear, y=log2(Alyref_Nxf1_ratio)) + geom_point(size=1) + geom_smooth(method="lm") + theme_bw()
+
+   Comparing ratio of Alyref to Nxf1 clip sites to nuclear localisation
+
+
+
+.. report:: hnrnpu.AlyrefVsChTopVsLocalisation
+   :render: r-ggplot
+   :groupby: all
+   :statement: aes(x=nuclear >=2, y=log2(Alyref_Nxf1_ratio)) + geom_boxplot(fill=NA, outlier.shape=NA)  + geom_point(position=position_jitter(w=0.1,h=0), size=1) + theme_bw()
+
+   Comparing ratio of Alyref to Nxf1 clip sites to nuclear localisation
+
+
+I'm worried that the cytoplasmic stats are being bias the cases where there are no Nxf1 tags: the horizonatal lines on the plot. Could this be due nuclear localised lincRNAs being more strongly expressed? In the plot I've removed the cases where both the Alyref and Nxf1 tags were zero.
+
+
+.. report:: hnrnpu.AlyrefVsChTopVsLocalisation
+   :render: r-ggplot
+   :groupby: all
+   :statement: aes(x=nuclear >=2, y=log2(Alyref_Nxf1_ratio)) + geom_boxplot(data=rframe[rframe$Alyref_Nxf1_ratio != 1,], fill=NA, outlier.shape=NA)  + geom_point(data=rframe[rframe$Alyref_Nxf1_ratio != 1,],position=position_jitter(w=0.1,h=0), size=1) + theme_bw()
+
+   Comparing ratio of Alyref to Nxf1 clip sites to nuclear localisation
+   

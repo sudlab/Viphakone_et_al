@@ -29,21 +29,21 @@ class TRNAScores(ProjectTracker):
         results = results.unstack(level="Pulldown")
         results = results.reset_index()
         
-        project_id = P.getProjectId()
-        prefix = PARAMS["report_prefix"]
+#        project_id = P.getProjectId()
+#        prefix = PARAMS["report_prefix"]
     
-        tracks_url = "https://www.cgat.org/downloads/%(project_id)s/%(prefix)sexport/tRNAs/UCSC.txt" % locals()
+#        tracks_url = "https://www.cgat.org/downloads/%(project_id)s/%(prefix)sexport/tRNAs/UCSC.txt" % locals()
 
-        url_template = "http://genome.ucsc.edu/cgi-bin/hgTracks?db=h19&position=%s&hg_customText=%s"
+#        url_template = "http://genome.ucsc.edu/cgi-bin/hgTracks?db=h19&position=%s&hg_customText=%s"
 
-        positions = results.apply(
-            lambda x: "%s:%s-%s" % (x.contig, x.start-500, x.end+500), axis=1)
+#        positions = results.apply(
+#            lambda x: "%s:%s-%s" % (x.contig, x.start-500, x.end+500), axis=1)
 
-        link_urls = positions.apply(lambda x: url_template % (x, tracks_url))
+#        link_urls = positions.apply(lambda x: url_template % (x, tracks_url))
         
-        links = link_urls.apply(lambda x: "`LINK <%s>`_" % x)
+#        links = link_urls.apply(lambda x: "`LINK <%s>`_" % x)
         
-        results["Link"] = links
+#        results["Link"] = links
         results = results.drop(["contig", "start", "end"], axis=1)
         results = results.sort("Number of Factors", ascending=False )
         return results

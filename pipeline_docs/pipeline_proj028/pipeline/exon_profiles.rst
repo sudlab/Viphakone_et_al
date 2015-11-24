@@ -19,7 +19,7 @@ transcriptome mapping
 .. report:: GeneProfiles.TranscriptomeExonBoundaryProfiles
    :render: r-ggplot
    :groupby: all
-   :slices: R1,R2,R4
+   :slices: union
    :statement: aes(x=position, y=density) + stat_summary(fun.y="mean", geom = "line") + facet_wrap(~track, scale="free_y") + theme_bw() + geom_vline(xinterscept=c(0,-24), lty=2, lwd=0.5)
 
    As above but mapped to transcriptome.

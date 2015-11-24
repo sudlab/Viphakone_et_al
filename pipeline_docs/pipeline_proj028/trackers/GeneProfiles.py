@@ -114,7 +114,7 @@ class ExonBoundaryProfiles(ProjectTracker):
         results = self.getDataFrame(statement)
 
         results["density"] = results["density"]/sum(results["density"])
-        results["density"] = pandas.rolling_mean(results["density"], 10)
+        results["density"] = pandas.rolling_mean(results["density"], 3)
 
         return results
 
@@ -123,3 +123,31 @@ class ExonBoundaryProfiles(ProjectTracker):
 class TranscriptomeExonBoundaryProfiles(ExonBoundaryProfiles):
 
     table = "transcriptome_exon_boundary_profiles"
+
+
+class StubbsProfiles(ProjectTracker, SQLStatementTracker):
+
+    fields = ("fraction", "condition")
+
+    statement = '''SELECT fraction, condition, region, replicate, bin, area
+                   FROM stubbs_profiles'''
+ 
+    def __call__(self):
+
+        results = self.getDataFrame(self.statement)
+
+        results = results.groupby(["fraction", "condition", "region","bin"])["area"].mean().reset_index()
+
+        results["area"] = results.groupby(["fraction","condition","region"]
+                        )["area"].transform(pandas.rolling_mean, window=3
+                        )
+
+        return results
+
+
+class IntronProfiles(ProjectTracker, SQLStatementTracker):
+
+    statement = '''SELECT factor, replicate, length, position, density
+                   FROM intron_profiles'''
+
+    fields = ("factor","replicate")

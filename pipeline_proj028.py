@@ -110,7 +110,7 @@ import PipelineProj028
 import CGAT.Experiment as E
 import CGAT.IOTools as IOTools
 import CGAT.Database as Database
-import CGATPipelines.PipelineUtilities as PUtils
+
 import CGATPipelines.PipelineRnaseq as PipelineRnaseq
 import PipelineiCLIP
 import CGATPipelines.PipelineMotifs as PipelineMotifs
@@ -133,6 +133,7 @@ PARAMS = P.PARAMS
 PARAMS_ANNOTATIONS = P.peekParameters( PARAMS["annotations_dir"],
                                        "pipeline_annotations.py",
                                        on_error_raise=True)
+#import CGATPipelines.PipelineUtilities as PUtils
 
 PipelineiCLIP.PARAMS = PARAMS
 PipelineMotifs.PARAMS = PARAMS
@@ -883,6 +884,35 @@ def circular_candidates():
     pass
 
 
+@follows(mkdir("intron_profiles.dir"))
+@subdivide(os.path.join(
+                PARAMS["iclip_dir"],
+                "deduped.dir/*.bam"),
+           regex(".+/(.+).bam"),
+           add_inputs(os.path.join(
+               PARAMS["annotations_dir"],
+               PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           [r"intron_profiles.dir/\1.long.profile.tsv",
+            r"intron_profiles.dir/\1.short.profile.tsv"])
+def generateLongAndShortIntronProfiles(infiles, outfiles):
+    ''' Divide introns into long and short and generate meta profiles 
+    for each seperately'''
+
+    bamfile, gtf_file = infiles
+    PipelineProj028.intron_profiles(bamfile, gtf_file, outfiles,
+                                    submit=True,
+                                    job_memory="10G")
+
+
+@merge(generateLongAndShortIntronProfiles,
+       "intron_profiles.dir/intron_profiles.load")
+def loadIntronProfiles(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                          regex_filename = ".+/(.+-FLAG).(.+).(short|long)",
+                          cat="factor,replicate,length")
+
+    
 ###################################################################
 @follows(singleVsMultiExonGenes,
          normalised_profiles,
@@ -1042,6 +1072,171 @@ def loadGeneClusterCounts(infile, outfile):
 
     P.load(infile, outfile, options = "-i ID")
 
+
+###################################################################
+@follows(mkdir("transcript_chunks.dir"))
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           regex("(.+)"),
+           r"transcript_chunks.dir/reference_chunks.gtf.gz")
+def getTranscriptChunks(infile, outfile):
+    '''Take reference transcriptome and transform so that each part of an
+    exon or intron is an "exon" '''
+
+
+    statement=''' python %(scriptsdir)s/gtf2gtf.py --method=genes-to-unique-chunks
+                  -I %(infile)s
+                  -L %(outfile)s.log
+                  -S %(outfile)s'''
+
+    P.run()
+
+
+###################################################################
+@transform([os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),
+            "*.bam",
+            os.path.join(PARAMS["dir_external"],
+                        "stubbsRNAseq/*.bam")],
+           regex("(?:.+/)?([-\w]+(?:\.union|\.reproducible)?).+"),
+           add_inputs(getTranscriptChunks),
+           r"transcript_chunks.dir/\1.chunk_counts.tsv.gz")
+def countChunks(infiles, outfile):
+    ''' Use feature counts to count the number of reads in each 
+    chunk, both for RNA and iCLIP'''
+
+    bamfile, gtffile = infiles
+    statement = '''python %(project_src)s/count_clip_sites.py
+                              %(bamfile)s
+                              -I %(gtffile)s
+                              --feature=exon
+                              -S %(outfile)s'''
+
+    P.run()
+
+
+
+###################################################################
+@transform(getTranscriptChunks,
+           suffix(".gtf.gz"),
+           add_inputs(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           ".introns.load")
+def annotateIntronChunks(infiles, outfile):
+    '''Find those transcript chunks that represent consituative introns'''
+
+    chunks, transcripts = infiles
+
+    statement = ''' python %(scriptsdir)s/gtf2gtf.py
+                           -I %(transcripts)s
+                           -L %(outfile)s.log
+                          --method=merge-exons
+                 | python %(scriptsdir)s/gtf2gtf.py
+                           -L %(outfile)s.log
+                          --method=exons2introns
+                 | bedtools intersect -a %(chunks)s -b - -c
+                 | sed -E 's/.+gene_id \\"(ENSG[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
+                 | sed '1i gene_id\\texon_id\\tintron'
+                 | %(load_smt)s > %(outfile)s'''
+    tablename = P.toTable(outfile)
+    load_smt = P.build_load_statement(tablename=tablename,
+                                      options = "-i gene_id -i exon_id")
+    
+
+    P.run()
+
+
+###################################################################
+@transform(getTranscriptChunks,
+           suffix(".gtf.gz"),
+           add_inputs(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           ".constitive_exons.load")
+def annotateExonsChunks(infiles, outfile):
+    '''Find those transcript chunks that represent consituative exons'''
+
+    chunks, transcripts = infiles
+
+    statement = ''' python %(scriptsdir)s/gtf2gtf.py
+                           -I %(transcripts)s
+                           -L %(outfile)s.log
+                          --method=intersect-transcripts
+                          --with-utr 
+                 | bedtools intersect -a %(chunks)s -b - -c
+                 | sed -E 's/.+gene_id \\"(ENSG[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
+                 | sed '1i gene_id\\texon_id\\texon'
+                 | %(load_smt)s > %(outfile)s'''
+    tablename = P.toTable(outfile)
+    load_smt = P.build_load_statement(tablename=tablename,
+                                      options = "-i gene_id -i exon_id")
+    
+
+    P.run()
+
+
+###################################################################
+@transform(getTranscriptChunks,
+           suffix(".gtf.gz"),
+           add_inputs(os.path.join(
+               PARAMS["dir_external"], "sharp_detained_introns.bed.gz")),
+           ".detained.load")
+def annotateDetainedChunks(infiles, outfile):
+
+    chunks, introns = infiles
+
+    statement = ''' bedtools intersect -a %(chunks)s -b %(introns)s -c
+                  | sed -E 's/.+gene_id \\"(ENSG[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
+                  | sed '1i gene_id\\texon_id\\texon'
+                  | %(load_smt)s > %(outfile)s'''
+    tablename = P.toTable(outfile)
+    load_smt = P.build_load_statement(tablename=tablename,
+                                      options="-i gene_id -i exon_id")
+    
+
+    P.run()
+
+
+###################################################################
+@merge(countChunks, "transcript_chunks.dir/chunk_counts.load")
+def loadChunkCounts(infiles, outfile):
+    
+    infiles = " ".join(infiles)
+
+    statement = ''' python %(scriptsdir)s/combine_tables.py
+                           -k 4 -c 1,3
+                           --use-file-prefix
+                           --regex-filename="(.+).chunk_counts.tsv.gz"
+                          %(infiles)s
+                  | sed 's/gene_id_exon_id/gene_id\\texon_id/'
+                  | sed 's/-/\\t/'
+                  | %(load_stmt)s > %(outfile)s'''
+
+    tablename = P.toTable(outfile)
+    load_stmt = P.build_load_statement(tablename=tablename,
+                                       options="-i gene_id -i exon_id")
+    job_memory = "5G"
+    P.run()
+
+
+@merge([loadChunkCounts, annotateExonsChunks, annotateIntronChunks,
+        annotateDetainedChunks],
+       "transcript_chunks.dir/chunk_indexes.load")
+def jointIndexOnChunks(infiles, outfile):
+
+    cc = connect()
+
+    for infile in infiles:
+        table = P.toTable(infile)
+        cc.executescript(
+            '''DROP INDEX IF EXISTS %(table)s_joint;
+               CREATE INDEX %(table)s_joint ON %(table)s(gene_id,exon_id)'''
+            % locals())
+
+    P.touch(outfile)
+
+
+@follows(jointIndexOnChunks)
+def transcript_chunks():
+    pass
 
 ###################################################################
 @follows(loadCounts, loadGeneClusterCounts)
@@ -1394,13 +1589,7 @@ def no_flipin_clusters():
            "methylation_sites.bed")
 def liftOverMethylationSites(infile, outfile):
 
-    statement = '''liftOver <( cat %(infile)s | grep -P "^chr" )
-                            /ifs/mirror/ucsc/hg18/liftOver/hg18ToHg19.over.chain.gz
-                            %(outfile)s
-                            %(outfile)s.unmapped'''
-
-    P.run()
-
+    PipelineProj028.liftOverFromHg18(infile, outfile)
 
 ##################################################################
 @transform(liftOverMethylationSites,
@@ -1429,7 +1618,47 @@ def loadMethylatedGenes(infile, outfile):
     P.load(infile, outfile, options="-H gene_id -i gene_id")
 
 
+####################################################################
+@transform(PARAMS["external_darnell_methylation"],
+           regex("(.+)"),
+           "darnell_methylation_sites.bed")
+def liftOverDarnellMeth(infile, outfile):
+
+    PipelineProj028.liftOverFromHg18(infile, outfile)
+
+
 ###################################################################
+@follows(mkdir("methylation.dir"))
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           regex("(.+)"),
+           r"methylation.dir/internal_exons.gtf.gz")
+def getInternalExons(infile, outfile):
+
+    PipelineProj028.getInternalExons(infile, outfile,
+                                     submit=True)
+
+
+###################################################################
+@transform(os.path.join(PARAMS["iclip_dir"],
+                        "deduped.dir/*.bam"),
+           regex(".+/(.+).bam"),
+           add_inputs(liftOverDarnellMeth, getInternalExons),
+           r"methyaltion.dir/\1.distances.tsv.gz")
+def findMinDistanceMeth(infiles, outfile):
+
+    bamfile, gtffile, bedfile = infiles
+
+    statement = '''zcat %(gtffile)s
+                 | python %(scriptsdir)s/reproducibility_by_exon.py
+                   --method=min_dist
+                   %(bamfile)s %(bedfile)s -L %(outfile)s.log
+                   -S %(outfile)s '''
+
+    P.run()
+
+
+##################################################################
 @follows(loadMethylatedGenes)
 def methylation():
     pass 
@@ -2441,6 +2670,47 @@ def loadUnmappedComposition(infile, outfile):
 @follows(loadUnmappedComposition)
 def chtop_polya():
     pass
+
+
+###################################################################
+# Alyref and 3' end processing
+###################################################################
+@follows(mkdir("stubbs_profiles.dir"))
+@transform(os.path.join(PARAMS["dir_external"], "stubbsRNAseq/*.bam"),
+           regex(".+/(.+)\.merged.+"),
+           add_inputs(os.path.join(
+               PARAMS["iclip_dir"],
+               "mapping.dir/geneset.dir/reference.gtf.gz")),
+           r"stubbs_profiles.dir/\1.geneprofile.matrix.tsv.gz")
+def stubbsProfiles(infiles, outfile):
+    ''' create metagene profiles over transcripts for control and
+    Alyref RNAi to look for effects on run through '''
+
+    bam, genes = infiles
+    outprefix = P.snip(outfile, ".geneprofile.matrix.tsv.gz")
+    statement = '''python %(scriptsdir)s/bam2geneprofile.py
+                         --method=geneprofile
+                         --bam-file=%(bam)s
+                         --gtf-file=%(genes)s
+                         --reporter=transcript
+                         --use-base-accuracy
+                         --normalize-transcript=total-sum
+                         --normalize-profile=area
+                         --scale-flank-length=1
+                         --output-filename-pattern=%(outprefix)s.%%s'''
+
+    P.run()
+
+
+###################################################################
+@merge(stubbsProfiles, "stubbs_profiles.load")
+def loadStubbsProfiles(infiles, outfile):
+    
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+)_(.+)_(R[0-9]+).geneprofile.matrix.tsv.gz",
+                         cat="condition,fraction,replicate",
+                         options="-i fraction,condition,replicate")
+    
 ###################################################################
 # Export
 ###################################################################
@@ -2534,9 +2804,105 @@ def generateStubbsTrackDb(infiles, outfile):
 
 
 ###################################################################
+@transform(os.path.join(PARAMS["dir_external"], "Fu_RNAseq/*.bed.gz"),
+           regex(".+/GSM[0-9]+_Hela_hnRNPU_RNAseq_(.+).bed.gz"),
+           r"hnrnpu1.dir/HeLa_RNASeq_\1.bed.gz")
+def liftOverFuRNASeq(infile, outfile):
+
+    outfile = P.snip(outfile, ".gz")
+    statement = '''liftOver <( zcat %(infile)s | grep -P "^chr" )
+                            /ifs/mirror/ucsc/hg18/liftOver/hg18ToHg19.over.chain.gz
+                            %(outfile)s
+                            %(outfile)s.unmapped;
+
+                   checkpoint;
+
+                   gzip %(outfile)s'''
+
+    P.run()
+
+
+###################################################################
+@transform([liftOverFuRNASeq,
+            liftOverhnRNPUReads],
+           regex(".+/(.+)\.bed.gz"),
+           r"export/hg19/Hela_\1.bigWig")
+def FuRNAToBigWig(infile, outfile):
+
+    genome_file = os.path.join(PARAMS['annotations_dir'],"contigs.tsv")
+
+    tmp = P.getTempFilename()
+    statement = ''' zcat %(infile)s
+                  | sort -k1,1 -k2,2n
+                  | grep -P "chr[0-9XY]+\\t"  
+                  | genomeCoverageBed -split -bg -i stdin 
+                                      -g %(genome_file)s > %(tmp)s 2> %(outfile)s.log;
+                    
+                    checkpoint;
+
+                    bedGraphToBigWig %(tmp)s 
+                                     %(genome_file)s 
+                                     %(outfile)s 2>>%(outfile)s.log;
+
+                    checkpoint;
+
+                    rm %(tmp)s'''
+
+    P.run()
+
+
+###################################################################
+@merge(FuRNAToBigWig, "export/hg19/Fu_trackDb.txt")
+def generateFuTrackDb(infiles, outfile):
+
+    template = '''
+       track %(track_name)s
+       parent Fu
+       bigDataUrl %(track_data_URL)s
+       shortLabel %(short_label)s
+       longLabel %(long_label)s
+       autoScale on
+       visibility full
+       alwaysZero on
+       maxHeightPixels 32:32:11
+       type bigWig
+       windowingFunction mean
+      '''
+
+    stanzas = []
+    for track in infiles:
+        track_name = P.snip(os.path.basename(track), ".bigWig")
+        track_data_URL = os.path.basename(track)
+        short_label = track_name
+        if "CLIP" in track_name:
+            type = "CLIP"
+        else:
+            type = "RNA-seq"
+
+        long_label = "%s depth from Fu et al for track %s" \
+                     % (type,track_name)
+        
+        stanzas.append(template % locals())
+
+    composite_stanaz = '''
+
+    track Fu
+    shortLabel Fu RNA
+    longLabel RNA seq and CLIP depth from Fu et al
+    superTrack on
+   '''
+    
+    output = "\n".join([composite_stanaz] + stanzas)
+
+    with IOTools.openFile(outfile, "w") as outf:
+        outf.write(output)
+
+
+###################################################################
 @merge([os.path.join(PARAMS["iclip_dir"], "export/hg19/trackDb.txt"),
         maketRNAClusterUCSC,
-        generateStubbsTrackDb],
+        generateStubbsTrackDb,
+        generateFuTrackDb],
        "export/hg19/trackDb.txt")
 def mergeTrackDbs(infiles, outfile):
     

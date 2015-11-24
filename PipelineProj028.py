@@ -3,7 +3,7 @@ import numpy as np
 import CGAT.IOTools as IOTools
 from CGATPipelines.Pipeline import cluster_runnable
 from CGATPipelines.Pipeline import toTable
-import CGATPipelines.PipelineUtilities as PUtils
+#import CGATPipelines.PipelineUtilities as PUtils
 import CGAT.Experiment as E
 import CGAT.GTF as GTF
 import CGAT.Bed as Bed
@@ -1151,3 +1151,217 @@ def getUnmappedNucleotideComp(infile, outfile):
 
         for (length, base, count), nreads in results.iteritems():
             outf.write("\t".join([length, base, count, str(nreads)]) + "\n")
+
+@cluster_runnable
+def intron_profiles(bamfile, gtffile, outfiles):
+
+    long_introns = pd.Series(np.zeros(100), index=range(100))
+    small_introns = pd.Series(np.zeros(100), index=range(100))
+
+    bam = pysam.AlignmentFile(bamfile)
+    nGenes = 0
+    nSmall_introns = 0
+    nLarge_introns = 0
+
+    for gene in GTF.flat_gene_iterator(
+            GTF.iterator(IOTools.openFile(gtffile))):
+
+        if nGenes % 1000 == 0:
+            E.debug("%i genes examined" % nGenes)
+
+        exons = []
+        for exon in gene:
+            if not exon.feature == "exon":
+                continue
+
+            exon = GTF.Entry().copy(exon)
+            exon.transcript_id = "1"
+            exons.append(exon)
+        
+        introns = GTF.toIntronIntervals(exons)
+
+        introns = [intron for intron in introns if
+                   not (1000 <= (intron[1] - intron[0]) < 10000)
+                   and intron[1] - intron[0] > 105]
+                 
+        if len(introns) == 0:
+            nGenes += 1
+            continue
+
+        intron_counts = iCLIP.count_intervals(bam, introns,
+                                              gene[0].contig,
+                                              gene[0].strand)
+
+        if intron_counts.sum() == 0:
+            nGenes += 1
+            continue
+
+        intron_coords = iCLIP.TranscriptCoordInterconverter(exons,
+                                                            introns=True)
+
+        intron_counts.index = intron_coords.genome2transcript(
+            intron_counts.index.values)
+        
+        intron_counts = intron_counts.sort_index()
+
+        for intron in introns:
+            
+            length = intron[1] - intron[0]
+
+            intron = intron_coords.genome2transcript((intron[0], intron[1]-1))
+            intron.sort()
+
+            this_intron_counts = intron_counts.loc[intron[0]:intron[1]-5]
+            
+            if this_intron_counts.sum() == 0:
+                continue
+
+            intron = (intron[0], intron[1] + 1)
+
+            this_intron_counts.index = this_intron_counts.index.values - intron[0]
+            bins = np.linspace(0, length, num=101, endpoint=True)
+
+            try:
+                this_intron_counts = this_intron_counts.groupby(
+                    list(pd.cut(this_intron_counts.index,
+                                bins=bins,
+                                labels=range(100),
+                                include_lowest=True))).sum()
+            except:
+                E.debug(this_intron_counts)
+                raise
+
+
+            this_intron_counts = this_intron_counts / this_intron_counts.sum()
+            
+            if intron[1] - intron[0] <= 10000:
+                nSmall_introns += 1
+                small_introns = small_introns.add(this_intron_counts, fill_value=0)
+               # E.debug(small_introns)
+            elif intron[1] - intron[0] > 100000:
+                nLarge_introns += 1
+                long_introns = long_introns.add(this_intron_counts, fill_value=0)
+               # E.debug(long_introns)
+
+        nGenes += 1
+
+        
+    E.info("Examined %i short and %i long introns" % (nSmall_introns, nLarge_introns))
+
+    reads = 0
+    for outfile in outfiles:
+
+        if "long" in outfile:
+            introns = long_introns
+        elif "short" in outfile:
+            introns = small_introns
+        else:
+            raise ValueError()
+
+        E.info("Normalising and computing profile")
+
+        reads += introns.sum()
+        introns = introns / introns.sum()
+        combined = introns.reset_index()
+
+        combined.to_csv(IOTools.openFile(outfile, "w"),
+                        sep="\t",
+                        index=False,
+                        header=["position", "density"])
+
+    E.info("Found %i crosslink sites in total" % reads)
+
+
+def calcAverageDistance(profile1, profile2):
+    ''' This function calculates the average distance of all
+    pairwise distances in two profiles'''
+
+    def _cartesian(x, y):
+        return np.transpose([np.tile(x, len(y)), np.repeat(y, len(x))])
+
+    positions = _cartesian(profile1.index.values, profile2.index.values)
+    counts = _cartesian(profile1.values, profile2.values)
+    counts = np.prod(counts, axis=0)
+    distances = np.abs(positions[:, 0] - positions[:, 1])
+
+    mean_distance = (distances.astype("float64") * counts) / np.sum(counts)
+
+    return mean_distance
+
+
+def findMinDistance(profile1, profile2):
+    '''Finds mean distance between each read in profile1
+    and a read in profile2'''
+
+    locations1 = profile1.index.values.astype("uint16")
+
+    locations2 = profile2.index.values.astype("uint16")
+
+    mat1 = np.repeat(locations1, locations2.size).reshape(
+        (locations1.size, locations2.size))
+    mat2 = np.tile(locations2, locations1.size).reshape(
+        (locations1.size, locations2.size))
+
+    distances = np.abs(mat1-mat2).min(axis=1)
+
+    return distances.mean()
+
+
+def spread(profile, bases):
+
+    a = pd.Series()
+
+    for i, count in profile.iteritems():
+        a.add(pd.Series([count]*(2*bases),
+                        range(i-bases, i)+range(i+1, i+bases+1)),
+              fill_value=0)
+
+    return profile.add(a, fill_value=0)
+
+
+def randomiseSites(profile, start, end, keep_dist=True):
+    '''Randomise clipped sites within an interval (between start and end)
+    if keep_dist is true, then reads on the same base are kept togehter'''
+
+    if keep_dist:
+
+        profile = profile.copy()
+        profile.index = np.random.choice(
+            np.arange(start, end), profile.size, replace=False)
+        profile = profile.sort_index()
+        return profile
+
+    else:
+        
+        randomised = np.random.choice(
+            np.arange(start, end), profile.sum(), replace=True)
+        randomised = pd.Series(randomised).value_counts().sort_index()
+        return randomised
+
+def liftOverFromHg18(infile, outfile):
+
+    import CGATPipelines.Pipeline as P 
+
+    statement = '''liftOver <( cat %(infile)s | grep -P "^chr" )
+                            /ifs/mirror/ucsc/hg18/liftOver/hg18ToHg19.over.chain.gz
+                            %(outfile)s
+                            %(outfile)s.unmapped'''
+
+    P.run()
+
+@cluster_runnable
+def getInternalExons(infile, outfile):
+
+    outfile = IOTools.openFile(outfile, "w")
+
+    for transcript in GTF.transcript_iterator(GTF.iterator(
+                                   IOTools.openFile(infile))):
+
+        transcript = [exon for exon in transcript if
+                      exon.feature == "exon"]
+
+        for exon in transcript[1:-1]:
+            outfile.write(str(exon)+"\n")
+
+    outfile.close()
+

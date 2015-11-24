@@ -30,7 +30,7 @@ class KDVsNuclearLinc(ProjectTracker, SQLStatementTracker):
                            gi.gene_name as symbol,
                            nuc.log2FoldChange as nuclear,
                            nuc.padj as nuclear_padj,
-                           (sum(kd.hnrnpu1kd_EstimatedNumReads) + 0.1)/(sum(kd.WT_EstimatedNumReads)+0.1) as KD,
+                           (sum(kd.hnrnpu1kd_EstimatedNumReads) + 1)/(sum(kd.WT_EstimatedNumReads)+1) as KD,
                            biotype,
                            CASE WHEN nuc.log2FoldChange >= 2 THEN 'Nuclear'
                                 WHEN nuc.log2FoldChange < 2 THEN 'Cytoplasmic'
@@ -46,7 +46,7 @@ class KDVsNuclearLinc(ProjectTracker, SQLStatementTracker):
                            ON gi.gene_id = biotypes.gene_id 
                    WHERE nuc.baseMean > 50 AND
                          (kd.hnrnpu1kd_EstimatedNumReads + kd.WT_EstimatedNumReads) > 100 AND
-                         biotype = "lincRNA"
+                         gene_biotype IN ('lincRNA','antisense')
                    GROUP BY nuc.gene_id'''
 
 
@@ -70,3 +70,29 @@ class KDVsNuclear(ProjectTracker, SQLStatementTracker):
                          (kd.hnrnpu1kd_EstimatedNumReads + kd.WT_EstimatedNumReads) > 100 
                       
                    GROUP BY nuc.gene_id'''
+
+class AlyrefVsChTopVsLocalisation(ProjectTracker, SQLStatementTracker):
+    fields = ('gene_id', )
+
+    statement = '''SELECT DISTINCT
+                    gi.gene_id as gene_id,
+                    gi.gene_name as symbol,
+                    nuc.log2FoldChange as nuclear,
+                    nuc.baseMean as expres,
+                    (sum(Alyref_FLAG_union)+1.0)/(sum(Nxf1_FLAG_union)+1.0) as Alyref_Nxf1_ratio
+                   FROM
+                      fraction_diff_deseq as nuc
+                    INNER JOIN
+                      chunk_counts
+                     ON chunk_counts.gene_id = nuc.gene_id
+                    INNER JOIN
+                      annotations.gene_info as gi
+                     ON gi.gene_id = nuc.gene_id
+                   WHERE
+                    nuc.baseMean > 50 AND
+                    gi.gene_biotype IN ('lincRNA','antisense')
+                   
+                   GROUP BY nuc.gene_id
+                    '''
+
+
