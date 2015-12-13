@@ -2,8 +2,7 @@ import pandas as pd
 import numpy as np
 import CGAT.IOTools as IOTools
 from CGATPipelines.Pipeline import cluster_runnable
-from CGATPipelines.Pipeline import toTable
-#import CGATPipelines.PipelineUtilities as PUtils
+import CGAT.Database as DUtils
 import CGAT.Experiment as E
 import CGAT.GTF as GTF
 import CGAT.Bed as Bed
@@ -29,6 +28,7 @@ AMBIGUITY_CODES = {'M': 'AC',
                    'B': 'CGT',
                    'N': 'CGAT'}
 
+PARAMS = {}
 
 def IUPAC2Regex(sequence):
 
@@ -89,7 +89,7 @@ def getSingleExonProfiles(clip_profile_file,
                     GROUP BY ti.gene_id
                     HAVING MAX(nval) = 1 '''
 
-    single_exon_genes = PUtils.fetch_DataFrame(statement, annotations)
+    single_exon_genes = DUtils.fetch_DataFrame(statement, annotations)
     single_exon_genes = single_exon_genes["id"].values
 
     clip_profile = pd.read_csv(IOTools.openFile(clip_profile_file),
@@ -182,8 +182,8 @@ def scoreCircularCandidates(outfile):
     statement = ''' SELECT * FROM profile_summaries
                     WHERE Protein='%s' '''
 
-    chtop = PUtils.fetch_DataFrame(statement % "Chtop")
-    alyref = PUtils.fetch_DataFrame(statement % "Alyref")
+    chtop = DUtils.fetch_DataFrame(statement % "Chtop")
+    alyref = DUtils.fetch_DataFrame(statement % "Alyref")
    
     chtop_score = scoreRegions(chtop)
     alyref_score = scoreRegions(alyref)
@@ -270,7 +270,7 @@ def calculateRegionEnrichments(bamfile, gtffile, outfile):
              [x+"_count" for x in region_names] + \
              [x+"_enrichment" for x in region_names]
 
-    PUtils.write(outfile, outlines, header)
+    IOTools.writeLines(outfile, outlines, header)
 
 
 @cluster_runnable
@@ -285,7 +285,7 @@ def getTranscriptTypeByGeneID(infile, outfile):
                          transcript[0].transcript_id,
                          transcript[0].source])
 
-    PUtils.write(outfile, outlines,
+    IOTools.writeLines(outfile, outlines,
                  header=["gene_id", "transcript_id", "biotype"])
 
     
@@ -493,10 +493,10 @@ def findRegexMotifs(motifs_file, sequences, outtable, gfffile, len_thresh=0,
                 outgffs.append(gff)
 
     gff_name = os.path.basename(outtable)
-    PUtils.write(outtable, outlines,
+    IOTools.writeLines(outtable, outlines,
                  header=["motif", "sequence", "location", "strand"])
     outgffs = map(str, outgffs)
-    PUtils.write(gfffile, [[gffline] for gffline in outgffs],
+    IOTools.writeLines(gfffile, [[gffline] for gffline in outgffs],
                  header=["track name='%s' description='%s'" % (gff_name,gff_name)])
 
 
@@ -547,6 +547,7 @@ def runGOSeq(genes, exprs, outfile, pwf_plot=None):
                                       method="BH"))
 
     R["write.table"](GO_analysis, file=outfile, quote=False, sep="\t", row_names=False)
+
 
 @cluster_runnable
 def tRNABaseCounts(gtf_file, bam_file, outfile):
@@ -819,7 +820,7 @@ def findhnRNPUDependentGenes(connection, outfile):
 
 #    ro.numpy2ri.activate()
 
-    counts = PUtils.fetch_DataFrame(''' SELECT DISTINCT gene_id,
+    counts = DUtils.fetch_DataFrame(''' SELECT DISTINCT gene_id,
                                               transcript,
                                               WT_EstimatedNumReads as WT,
                                               hnRNPU1kd_EstimatedNumReads as kd
@@ -1342,7 +1343,7 @@ def liftOverFromHg18(infile, outfile):
 
     import CGATPipelines.Pipeline as P 
 
-    statement = '''liftOver <( cat %(infile)s | grep -P "^chr" )
+    statement = '''liftOver <( zcat %(infile)s | grep -P "^chr" )
                             /ifs/mirror/ucsc/hg18/liftOver/hg18ToHg19.over.chain.gz
                             %(outfile)s
                             %(outfile)s.unmapped'''
@@ -1365,3 +1366,70 @@ def getInternalExons(infile, outfile):
 
     outfile.close()
 
+###################################################################
+def bamToBigWig(infile, outfile):
+
+    import CGATPipelines.Pipeline as P
+
+    genome_file = os.path.join(PARAMS['annotations_dir'],"contigs.tsv")
+
+    tmp = P.getTempFilename()
+    statement = ''' genomeCoverageBed -split -bg -ibam %(infile)s 
+                                      -g %(genome_file)s > %(tmp)s 2> %(outfile)s.log;
+                    
+                    checkpoint;
+
+                    bedGraphToBigWig %(tmp)s 
+                                     %(genome_file)s 
+                                     %(outfile)s 2>>%(outfile)s.log;
+
+                    checkpoint;
+
+                    rm %(tmp)s'''
+
+    P.run()
+
+
+def bigWigTrackDB(infiles,
+                  long_label_template,
+                  group_name,
+                  group_long_label,
+                  outfile):
+
+    import CGATPipelines.Pipeline as P
+
+    template = '''
+       track %(track_name)s
+       parent %(group_name)s
+       bigDataUrl %(track_data_URL)s
+       shortLabel %(short_label)s
+       longLabel %(long_label)s
+       autoScale on
+       visibility full
+       alwaysZero on
+       maxHeightPixels 32:32:11
+       type bigWig
+       windowingFunction mean
+      '''
+
+    stanzas = []
+    for track in infiles:
+        track_name = P.snip(os.path.basename(track), ".bigWig")
+        track_data_URL = os.path.basename(track)
+        short_label = track_name
+        long_label = long_label_template % locals()
+        
+        stanzas.append(template % locals())
+
+    composite_stanaz = '''
+
+    track %(group_name)s
+    shortLabel %(group_name)s
+    longLabel %(group_long_label)s
+    superTrack on
+   '''
+    
+    output = "\n".join([composite_stanaz % locals()] + stanzas)
+
+    with IOTools.openFile(outfile, "w") as outf:
+        outf.write(output)
