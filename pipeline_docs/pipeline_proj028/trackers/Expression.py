@@ -211,3 +211,22 @@ class LongExpressedGenes(ProjectTracker, SQLStatementTracker):
                           LIMIT 100'''
 
     fields = ('gene_id',)
+
+class LongCDSExpressedGenes(ProjectTracker, SQLStatementTracker):
+
+    statement = '''SELECT DISTINCT gs.gene_id as gene_id,
+                          gene_name,
+                          gs.sum/1000.0 as length,
+                          500000000 *(Control_Total_R1 + Control_Total_R2) / 
+                                 ((SELECT sum(Control_Total_R1 + Control_Total_R2) FROM stubbs_counts)
+                                  * gs.sum) as RPKM
+                          FROM
+                            stubbs_counts as sc
+                           INNER JOIN annotations.gene_info as gi on gi.gene_id = sc.geneid
+                           INNER JOIN annotations.gene_stats as gs on gi.gene_id = gs.gene_id
+                          WHERE length > 3.5 AND RPKM > 10
+                          ORDER BY RPKM DESC
+                         
+                          LIMIT 100'''
+
+    fields = ('gene_id',)
