@@ -1,6 +1,6 @@
 from CGATReport.Tracker import *
 from ProjectTracker import *
-
+import numpy as np
 
 class UTRProfiles(TrackerDataframes):
     ''' Read in normalized profile matricies as dataframes for plotting'''
@@ -151,3 +151,56 @@ class IntronProfiles(ProjectTracker, SQLStatementTracker):
                    FROM intron_profiles'''
 
     fields = ("factor","replicate")
+
+
+class HighlyExpressed3BiasGenes(ProjectTracker):
+
+    def __call__(self, track):
+
+        statement = ''' SELECT gi.gene_id, gi.gene_name, ti.transcript_id as transcript_id,
+                               utr3_enrichment, utr3_count,
+                               500000000.0 * (Control_Total_R1 + Control_Total_R2) /
+                                ((SELECT sum(Control_Total_R1 + Control_Total_R2) 
+                                  FROM stubbs_counts) * gs.sum ) as expression
+                        FROM profile_summaries
+                           INNER JOIN annotations.transcript_info as ti
+                             ON ti.transcript_id = profile_summaries.transcript_id 
+                           INNER JOIN annotations.gene_info as gi
+                             ON gi.gene_id = ti.gene_id
+                           INNER JOIN stubbs_counts as counts
+                             ON gi.gene_id = counts.geneid
+                           INNER JOIN annotations.gene_stats as gs
+                             ON gs.gene_id = gi.gene_id
+                        WHERE
+                             protein = 'Chtop' AND
+                             expression > 10 '''
+
+        
+        results = self.getDataFrame(statement)
+        
+
+        results.replace("nan", np.nan, inplace=True)
+        results.dropna(inplace=True)
+        results.set_index("transcript_id", inplace=True)
+        info = results[["gene_id","gene_name"]]
+        data = results.drop(["gene_id", "gene_name"], axis=1)
+        data = data.astype("float64")
+        
+        data = data.groupby(
+            level="transcript_id").mean()
+
+        log_ranks = data.rank().apply(np.log10)
+        log_ranks = log_ranks.drop("expression", axis = 1)
+        #log_ranks["expression"] = log_ranks["expression"]/4
+        log_ranks = log_ranks.sum(axis=1)
+        log_ranks.name = "score"
+        data = data.applymap(lambda x: "%.2f" % x)
+        
+        results = info.join(log_ranks).join(data).drop_duplicates()
+        results.sort("score", inplace=True, ascending=False)
+        results["score"] = results["score"].apply(lambda x: "%.3f" % x)
+        
+        return results.iloc[0:100].reset_index()
+
+        
+
