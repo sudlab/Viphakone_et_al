@@ -101,15 +101,17 @@ Code
 """
 from ruffus import *
 from ruffus.combinatorics import *
-import sys, glob, gzip, os, itertools, re, math, types, collections, time
-import optparse, shutil
+import sys
+import glob
+import os
+import re
 import sqlite3
 import pandas
 
 import PipelineProj028
 import CGAT.Experiment as E
 import CGAT.IOTools as IOTools
-import CGAT.Database as Database
+import CGAT.Database as DUtils
 
 import CGATPipelines.PipelineRnaseq as PipelineRnaseq
 import PipelineiCLIP
@@ -127,17 +129,18 @@ import CGATPipelines.Pipeline as P
 P.getParameters(
     ["%s/pipeline.ini" % __file__[:-len(".py")],
      "../pipeline.ini",
-     "pipeline.ini" ] )
+     "pipeline.ini"])
 
 PARAMS = P.PARAMS
-PARAMS_ANNOTATIONS = P.peekParameters( PARAMS["annotations_dir"],
-                                       "pipeline_annotations.py",
-                                       on_error_raise=True)
-#import CGATPipelines.PipelineUtilities as PUtils
+PARAMS_ANNOTATIONS = P.peekParameters(PARAMS["annotations_dir"],
+                                      "pipeline_annotations.py",
+                                      on_error_raise=True)
+
 
 PipelineiCLIP.PARAMS = PARAMS
 PipelineMotifs.PARAMS = PARAMS
 PipelineGO.PARAMS = PARAMS
+PipelineProj028.PARAMS = PARAMS
 
 ###################################################################
 ###################################################################
@@ -264,7 +267,7 @@ def countStubbsRNAseq(infiles, outfile):
         annotations,
         bamfile,
         outfile,
-        nthreads=PARAMS['featurecounts_threads'],
+        job_threads=PARAMS['featurecounts_threads'],
         strand=0,
         options=PARAMS['featurecounts_options'] + ' -O -M')
 
@@ -347,11 +350,11 @@ def filterExpressedTranscripts(infiles, outfile):
     query = ''' SELECT transcript_id FROM HEK293_sailfish
               WHERE TPM > 1 '''
 
-    transcript_ids = PUtils.fetch(query, connect())
+    transcript_ids = DUtils.fetch(query, connect())
     
     tmp = P.getTempFilename(dir="/ifs/scratch/")
 
-    PUtils.write(tmp, transcript_ids)
+    IOTools.writeLinesLines(tmp, transcript_ids)
 
     statement = '''python %(scriptsdir)s/gtf2gtf.py
                           --method=filter --filter-method=transcript
@@ -475,8 +478,8 @@ def getSingleExonGenes(outfile):
                     GROUP BY ti.gene_id
                     HAVING MAX(nval) = 1 '''
 
-    results = PUtils.fetch(statement, connect())
-    PUtils.write(outfile, results)
+    results = DUtils.fetch(statement, connect())
+    IOTools.writeLinesLines(outfile, results)
 
 
 ###################################################################
@@ -629,7 +632,7 @@ def loadExpressedTranscriptStats(infile, outfile):
 def getTranscriptsBinnedByLength(infiles, outfiles):
     '''divide transcripts into bins based on length '''
 
-    tlens = PUtils.fetch_DataFrame('''SELECT transcript_id, sum as elen, nval
+    tlens = DUtils.fetch_DataFrame('''SELECT transcript_id, sum as elen, nval
                                    FROM expressed_transcripts_stats
                                    WHERE source = 'protein_coding' ''')
 
@@ -962,7 +965,7 @@ def count_clipped_transcripts(infiles, outfile):
         annotations,
         bamfile,
         outfile,
-        nthreads=PARAMS['featurecounts_threads'],
+        job_threads=PARAMS['featurecounts_threads'],
         strand=1,
         options=PARAMS['featurecounts_options'] + ' -O')
 
@@ -983,7 +986,7 @@ def countRNAExpression(infiles, outfile):
         annotations,
         bamfile,
         outfile,
-        nthreads=PARAMS['featurecounts_threads'],
+        job_threads=PARAMS['featurecounts_threads'],
         strand=PARAMS['featurecounts_strand'],
         options=PARAMS['featurecounts_options'])
 
@@ -1269,7 +1272,7 @@ def runClippedGenesGO(infiles, outfile):
                     ON ti.transcript_id = sf.transcript_id
                    GROUP BY Geneid''' % column
 
-    results = PUtils.fetch_DataFrame(statement,connect())
+    results = DUtils.fetch_DataFrame(statement,connect())
     results.clipped[results.clipped > 0] = 1
     results = results.set_index("Geneid")
 
@@ -1302,7 +1305,7 @@ def runClustersGo(infiles, outfile):
                      INNER JOIN track_counts as counts
                      ON clusters.ID = counts.Geneid ''' % column
 
-    results = PUtils.fetch_DataFrame(statement, connect())
+    results = DUtils.fetch_DataFrame(statement, connect())
 
     results = results.set_index("ID")
 
@@ -1359,7 +1362,7 @@ def runPipeClip(infile, outfile):
 #Cluster optimisation
 ##################################################################
 @follows(mkdir("window_size_scan.dir"))
-@split(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*-FLAG-R*.bam"),
+@subdivide(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*-FLAG-R*.bam"),
        regex(".+/(.+).bam"),
        add_inputs(os.path.join(PARAMS["iclip_dir"],
                                "mapping.dir/geneset.dir/reference.gtf.gz")),
@@ -1423,7 +1426,7 @@ def loadWindowCounts(infiles, outfile):
 
 ##################################################################
 @follows(mkdir("p_threhold_scan.dir"))
-@split(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*-FLAG-R*.bam"),
+@subdivide(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*-FLAG-R*.bam"),
        regex(".+/(.+).bam"),
        add_inputs(os.path.join(PARAMS["iclip_dir"],
                                "mapping.dir/geneset.dir/reference.gtf.gz")),
@@ -1668,7 +1671,7 @@ def methylation():
 # tRNAs
 ###################################################################
 @follows(mkdir("trnas.dir"))
-@split(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*-FLAG-R*.bam"),
+@subdivide(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*-FLAG-R*.bam"),
        regex(".+/(.+).bam"),
        add_inputs(PARAMS["trna_annotations"]),
        [r"trnas.dir/\1.clusters.bg.gz",
@@ -2047,7 +2050,7 @@ def getSingleExonClusters(infiles, outfile):
                     HAVING MAX(nval) = 1 '''
 
     tmp = P.getTempFilename(shared=True)
-    PUtils.write(tmp, PUtils.fetch(statement, connect()))
+    IOTools.writeLines(tmp, DUtils.fetch(statement, connect()))
 
     statement = ''' python %(scriptsdir)s/gtf2gtf.py
                          -I %(geneset)s
@@ -2102,6 +2105,7 @@ def getRetainedIntronModelsWithRIasExons(infile, outfile):
 
 
 ###################################################################
+@follows(mkdir("retained_introns.dir"))
 @transform(os.path.join(
                PARAMS["dir_external"], "sharp_detained_introns.bed.gz"),
            regex(".+"),
@@ -2153,7 +2157,7 @@ def countRetainedIntronExons(infiles, outfile):
         annotations,
         bamfile,
         outfile,
-        nthreads=PARAMS['featurecounts_threads'],
+        job_threads=PARAMS['featurecounts_threads'],
         strand=0,
         options=' -O -M  --minReadOverlap 5 -f')
 
@@ -2740,24 +2744,7 @@ def maketRNAClusterUCSC(infiles, outfile):
            r"export/hg19/\1.bigWig")
 def stubbsRNAseqToBigWig(infile, outfile):
 
-    genome_file = os.path.join(PARAMS['annotations_dir'],"contigs.tsv")
-
-    tmp = P.getTempFilename()
-    statement = ''' genomeCoverageBed -split -bg -ibam %(infile)s 
-                                      -g %(genome_file)s > %(tmp)s 2> %(outfile)s.log;
-                    
-                    checkpoint;
-
-                    bedGraphToBigWig %(tmp)s 
-                                     %(genome_file)s 
-                                     %(outfile)s 2>>%(outfile)s.log;
-
-                    checkpoint;
-
-                    rm %(tmp)s'''
-
-    P.run()
-
+    PipelineProj028.bamToBigWig(infile, outfile)
 
 ###################################################################
 @follows(mkdir("export/hg19"))
@@ -2765,42 +2752,34 @@ def stubbsRNAseqToBigWig(infile, outfile):
        "export/hg19/stubbs_trackDb.txt")
 def generateStubbsTrackDb(infiles, outfile):
 
-    template = '''
-       track %(track_name)s
-       parent stubbsRNAseq
-       bigDataUrl %(track_data_URL)s
-       shortLabel %(short_label)s
-       longLabel %(long_label)s
-       autoScale on
-       visibility full
-       alwaysZero on
-       maxHeightPixels 32:32:11
-       type bigWig
-       windowingFunction mean
-      '''
+    PipelineProj028.bigWigTrackDB(infiles,
+                                  "RNASeq data from stubbs et al track %(track)s",
+                                  "Stubbs et al RNAseq",
+                                  "RNAseq data from Stubbs et al",
+                                  outfile)
 
-    stanzas = []
-    for track in infiles:
-        track_name = P.snip(os.path.basename(track), ".bigWig")
-        track_data_URL = os.path.basename(track)
-        short_label = track_name
-        long_label = "RNA-seq read depth from stubbes et al for track %s" \
-                     % track_name
-        
-        stanzas.append(template % locals())
 
-    composite_stanaz = '''
+###################################################################
+@follows(mkdir("export/hg19"))
+@transform(os.path.join(PARAMS["dir_rnaseq"],
+                        "*-si*-*.bam"),
+           regex(".+/(.+\-si.+-.+)\..+\.bam"),
+           r"export/hg19/\1.bigWig")
+def chtopRNASeqToBigWig(infile, outfile):
 
-    track stubbsRNAseq
-    shortLabel Stubbs RNAseq
-    longLabel RNA seq depth from Stubbs et al
-    superTrack on
-   '''
+    PipelineProj028.bamToBigWig(infile, outfile)
 
-    output = "\n".join([composite_stanaz] + stanzas)
 
-    with IOTools.openFile(outfile, "w") as outf:
-        outf.write(output)
+###################################################################
+@merge(chtopRNASeqToBigWig,
+       "export/hg19/chtop_trackDb.txt")
+def generateChTopTrackDb(infiles, outfile):
+
+    PipelineProj028.bigWigTrackDB(infiles,
+                                  "RNASeq from ChTop knockdown track %(track_name)s",
+                                  "ChTop_RNAseq",
+                                  "RNASeq data from ChTop known experiments",
+                                  outfile)
 
 
 ###################################################################
@@ -2829,80 +2808,34 @@ def liftOverFuRNASeq(infile, outfile):
            r"export/hg19/Hela_\1.bigWig")
 def FuRNAToBigWig(infile, outfile):
 
-    genome_file = os.path.join(PARAMS['annotations_dir'],"contigs.tsv")
-
-    tmp = P.getTempFilename()
-    statement = ''' zcat %(infile)s
-                  | sort -k1,1 -k2,2n
-                  | grep -P "chr[0-9XY]+\\t"  
-                  | genomeCoverageBed -split -bg -i stdin 
-                                      -g %(genome_file)s > %(tmp)s 2> %(outfile)s.log;
-                    
-                    checkpoint;
-
-                    bedGraphToBigWig %(tmp)s 
-                                     %(genome_file)s 
-                                     %(outfile)s 2>>%(outfile)s.log;
-
-                    checkpoint;
-
-                    rm %(tmp)s'''
-
-    P.run()
-
+    PipelineProj028.bamToBigWig(infile, outfile)
 
 ###################################################################
-@merge(FuRNAToBigWig, "export/hg19/Fu_trackDb.txt")
+@collate(FuRNAToBigWig, 
+         regex(".+/HeLa_(.+)_(.+)/bigWig"),
+         r"export/hg19/Fu_\1_trackDb.txt")
 def generateFuTrackDb(infiles, outfile):
 
-    template = '''
-       track %(track_name)s
-       parent Fu
-       bigDataUrl %(track_data_URL)s
-       shortLabel %(short_label)s
-       longLabel %(long_label)s
-       autoScale on
-       visibility full
-       alwaysZero on
-       maxHeightPixels 32:32:11
-       type bigWig
-       windowingFunction mean
-      '''
+    if "iCLIP" in infile[0]:
+        type = "iCLIP"
+    else:
+        type = "RNASeq"
 
-    stanzas = []
-    for track in infiles:
-        track_name = P.snip(os.path.basename(track), ".bigWig")
-        track_data_URL = os.path.basename(track)
-        short_label = track_name
-        if "CLIP" in track_name:
-            type = "CLIP"
-        else:
-            type = "RNA-seq"
+    long_label_template = "%s data from Fu et al track %%(track)s" % type
 
-        long_label = "%s depth from Fu et al for track %s" \
-                     % (type,track_name)
-        
-        stanzas.append(template % locals())
-
-    composite_stanaz = '''
-
-    track Fu
-    shortLabel Fu RNA
-    longLabel RNA seq and CLIP depth from Fu et al
-    superTrack on
-   '''
-    
-    output = "\n".join([composite_stanaz] + stanzas)
-
-    with IOTools.openFile(outfile, "w") as outf:
-        outf.write(output)
+    PipelineProj028.bigWigTrackDB(infiles,
+                                  long_label_template,
+                                  "Fu et al %s" % type,
+                                  "%s data from Fu et al" % type,
+                                  outfile)
 
 
 ###################################################################
 @merge([os.path.join(PARAMS["iclip_dir"], "export/hg19/trackDb.txt"),
         maketRNAClusterUCSC,
         generateStubbsTrackDb,
-        generateFuTrackDb],
+        generateFuTrackDb,
+        generateChTopTrackDb],
        "export/hg19/trackDb.txt")
 def mergeTrackDbs(infiles, outfile):
     
