@@ -107,6 +107,7 @@ import os
 import re
 import sqlite3
 import pandas
+import collections
 
 import PipelineProj028
 import CGAT.Experiment as E
@@ -2714,7 +2715,112 @@ def loadStubbsProfiles(infiles, outfile):
                          regex_filename=".+/(.+)_(.+)_(R[0-9]+).geneprofile.matrix.tsv.gz",
                          cat="condition,fraction,replicate",
                          options="-i fraction,condition,replicate")
-    
+
+###################################################################
+# DaPars
+###################################################################
+@follows(mkdir("dapars.dir"))
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           regex(".+"),
+           "dapars.dir/geneset.bed")
+def getGenesetBed12(infile, outfile):
+    '''Convert geneset to BED12 format'''
+
+    statement = '''python %(scriptsdir)s/gff2bed.py 
+                           --bed12-from-transcripts
+                            -I %(infile)s
+                            -S %(outfile)s
+                            -L %(outfile)s.log '''
+
+    P.run()
+
+
+###################################################################
+@follows(mkdir("dapars.dir"))
+@originate("dapars.dir/transcripts_to_genes.txt")
+def generateDaParsTranscriptsToGenes(outfile):
+
+    statement = '''SELECT DISTINCT transcript_id, gene_id
+                   FROM biotypes'''
+
+    data = DUtils.fetch_DataFrame(statement, connect())
+
+    data.to_csv(outfile, header = False, index = False, sep = "\t")
+
+
+###################################################################
+@merge([getGenesetBed12, generateDaParsTranscriptsToGenes],
+       "dapars.dir/geneset_extracted.bed")
+def getDaParsGeneset(infiles, outfile):
+    ''' Process geneset to generate the input file for DaPars '''
+
+    geneset, symbols = infiles
+
+    statement=''' DaPars_Extract_Anno.py -b %(geneset)s
+                                         -s %(symbols)s
+                                         -o %(outfile)s '''
+
+    P.run()
+
+###################################################################
+# Get bedGraph files
+@follows(mkdir("dapars.dir"))
+@transform(os.path.join(PARAMS["dir_rnaseq"],
+                        "*-si*.bam"),
+           regex(".+/(GB2-si.+-R.)\..+\.bam"),
+           r"dapars.dir/\1.bedGraph")
+def ChtopRNAi2BedGraph(infile, outfile):
+
+    PipelineProj028.bamToBedGraph(infile, outfile)
+
+
+###################################################################
+@follows(mkdir("dapars.dir"))
+@transform(os.path.join(PARAMS["dir_external"],
+                        "stubbsRNAseq/*.bam"),
+           regex(".+/(.+)_(.+)_(R[0-9]).+"),
+           r"dapars.dir/HEK293\2-\1-\3.bedGraph")
+def StubbsToBedGraph(infile, outfile):
+
+    PipelineProj028.bamToBedGraph(infile, outfile)
+
+
+###################################################################
+@collate([ChtopRNAi2BedGraph, StubbsToBedGraph],
+         regex(".+/(.+)-(.+)-(R[0-9]).bedGraph"),
+         add_inputs(getDaParsGeneset),
+         r"dapars.dir/\1.dapars_config.txt")
+def generateDaParsConfig(infiles, outfile):
+    '''Generate config file for DaPars. Files all have same first name
+    part. Conditions are divided on second part, and reps on third'''
+
+    conditions = collections.defaultdict(list)
+    track = P.snip(outfile, ".dapars_config.txt")
+    utrs = infiles[0][1]
+    for infile in infiles:
+        conditions[re.match("(.+)-R[0-9]+", infile[0]).groups()[0]].append(infile[0])
+
+    condition1_files = conditions[conditions.keys()[0]]
+    condition2_files = conditions[conditions.keys()[1]]
+
+    PipelineProj028.generateDaParsConfig(condition1_files,
+                                         condition2_files,
+                                         utrs,
+                                         os.path.join(track,
+                                                      "dapars_out.tsv"),
+                                         outfile)
+
+
+###################################################################
+@transform(generateDaParsConfig,
+           regex(".+/(.+).dapars_config.txt"),
+           r"dapars.dir/\1/dapars_out.tsv")
+def runDaPars(infile, outfile):
+
+    statement = '''DaPars_main.py %(infile)s > %(infile)s.log'''
+    P.run()
+
 ###################################################################
 # Export
 ###################################################################

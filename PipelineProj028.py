@@ -1390,6 +1390,19 @@ def bamToBigWig(infile, outfile):
     P.run()
 
 
+###################################################################
+def bamToBedGraph(infile, outfile):
+
+    import CGATPipelines.Pipeline as P
+
+    genome_file = os.path.join(PARAMS['annotations_dir'],"contigs.tsv")
+
+    statement = ''' genomeCoverageBed -split -bg -ibam %(infile)s 
+                                      -g %(genome_file)s > %(outfile)s 2> %(outfile)s.log;
+                '''
+    P.run()
+
+###################################################################
 def bigWigTrackDB(infiles,
                   long_label_template,
                   group_name,
@@ -1433,3 +1446,58 @@ def bigWigTrackDB(infiles,
 
     with IOTools.openFile(outfile, "w") as outf:
         outf.write(output)
+
+
+###################################################################
+def generateDaParsConfig(condition1_files,
+                         condition2_files,
+                         utrs,
+                         dapars_outfile,
+                         config_outfile):
+    DaPars_config_template= '''
+#The following file is the result of step 1.
+
+Annotated_3UTR=%(utrs)s
+
+#A comma-separated list of BedGraph files of samples from condition 1
+
+Group1_Tophat_aligned_Wig=%(condition1_files)s
+#Group1_Tophat_aligned_Wig=Condition_A_chrX_r1.wig,Condition_A_chrX_r2.wig if multiple files in one group
+
+#A comma-separated list of BedGraph files of samples from condition 2
+
+Group2_Tophat_aligned_Wig=%(condition2_files)s
+
+Output_directory=%(outdir)s
+
+Output_result_file=%(dapars_outfile)s
+
+#At least how many samples passing the coverage threshold in two conditions
+Num_least_in_group1=%(dapars_num_least_in_group)i
+
+Num_least_in_group2=%(dapars_num_least_in_group)i
+
+Coverage_cutoff=%(dapars_coverage_cutoff)i
+
+#Cutoff for FDR of P-values from Fisher exact test.
+
+FDR_cutoff=%(dapars_fdr_cutoff)s
+
+
+PDUI_cutoff=%(dapars_pdui_cutoff)s
+
+Fold_change_cutoff=%(dapars_logfc_cutoff)s
+'''
+
+    outdir = os.path.dirname(os.path.abspath(dapars_outfile))
+    dapars_outfile = os.path.basename(dapars_outfile)
+    condition1_files = ",".join([os.path.abspath(f) for f in condition1_files])
+    condition2_files = ",".join([os.path.abspath(f) for f in condition2_files])
+
+    local_params = PARAMS.copy()
+    local_params.update(locals())
+
+    with IOTools.openFile(config_outfile,"w") as outf:
+        outf.write(DaPars_config_template % local_params)
+        
+    
