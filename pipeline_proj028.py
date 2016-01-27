@@ -198,7 +198,7 @@ def getGenesetFasta(infile, outfile):
 ###################################################################
 @transform(getGenesetFasta, 
            regex(".+"),
-           "sailfish_index.dir/transcriptome.sfi")
+           "sailfish_index.dir/txpInfo.bin")
 def generateSailfishIndex(infile,outfile):
     ''' generate sailfish index for specified geneset '''
 
@@ -244,13 +244,14 @@ def runSailFish(infiles, outfile):
 
 
 ###################################################################
-@transform(runSailFish, 
-           regex("(.+).dir/quant.sf"),
-           r"\1.load")
+@merge(runSailFish,
+       "HEK293_sailfish.load")
 def loadSailfish(infile, outfile):
-    P.load(infile, outfile, 
-           options="--header-names=transcript_id,length,TPM,RPKM,KPKM,nKmers,nReads -i transcript_id")
-
+    P.concatenateAndLoad(infile, outfile,
+                         regex_filename="(.+).dir/quant.sf",
+                         has_titles=False,
+                         header="track,transcript_id,length,TPM,nReads",
+                         options="-i transcript_id")
 
 
 ###################################################################
@@ -349,13 +350,14 @@ def filterExpressedTranscripts(infiles, outfile):
     infile = infiles[0]
     
     query = ''' SELECT transcript_id FROM HEK293_sailfish
-              WHERE TPM > 1 '''
+                GROUP BY transcript_id
+                HAVING AVG( TPM ) > 1 '''
 
     transcript_ids = DUtils.fetch(query, connect())
     
     tmp = P.getTempFilename(dir="/ifs/scratch/")
 
-    IOTools.writeLinesLines(tmp, transcript_ids)
+    IOTools.writeLines(tmp, transcript_ids)
 
     statement = '''python %(scriptsdir)s/gtf2gtf.py
                           --method=filter --filter-method=transcript
@@ -916,7 +918,96 @@ def loadIntronProfiles(infiles, outfile):
                           regex_filename = ".+/(.+-FLAG).(.+).(short|long)",
                           cat="factor,replicate,length")
 
-    
+
+###################################################################
+# Histone Profiles
+###################################################################
+@follows(mkdir("histones.dir"))
+@transform(filterExpressedTranscripts,
+           regex(".+"),
+           add_inputs(os.path.join(
+               PARAMS["dir_external"],
+               "histone_genes.tsv")),
+           r"histones.dir/histones.gtf.gz")
+def getHistoneAnno(infiles, outfile):
+    '''Get histones annotations from annotations file
+    using list of gene_ids'''
+
+    anno, genes = infiles
+
+    statement = '''python %(scriptsdir)s/gtf2gtf.py
+                          --method=filter
+                          --filter-method=transcript
+                          --map-tsv-file <(cut -f2 %(genes)s |
+                                           grep -P '^ENST')
+                          -I %(anno)s
+                          -S %(outfile)s
+                          -L %(outfile)s.log'''
+
+    P.run()
+
+
+###################################################################
+@transform(getSingleExonGeneModels,
+           regex(".+"),
+           add_inputs(os.path.join(
+               PARAMS["dir_external"],
+               "histone_genes.tsv")),
+           r"histones.dir/non-histones.gtf.gz")
+def getNonHistoneSingleExon(infiles, outfile):
+    '''Get gene models for single exon genes which are not
+    histones'''
+
+    models, histones = infiles
+
+    statement = '''python %(scriptsdir)s/gtf2gtf.py
+                          --method=filter
+                          --filter-method=transcript
+                          --invert-filter
+                          --map-tsv-file <(cut -f2 %(histones)s |
+                                           grep -P '^ENST' )
+                           -I %(models)s
+                           -S %(outfile)s
+                           -L %(outfile)s.log'''
+
+    P.run()
+
+
+###################################################################
+@product(os.path.join(
+                PARAMS["iclip_dir"],
+                "deduped.dir/*.bam"),
+         formatter(".+/(.+).bam"),
+         [getHistoneAnno, getNonHistoneSingleExon],
+         formatter(".+/(.+).gtf.gz"),
+         r"histones.dir/{1[0][0]}_vs_{1[1][0]}_profile.tsv.gz")
+def doHistoneMetaGene(infiles, outfile):
+
+    bam, anno = infiles
+
+    statement = '''python %(project_src)s/iCLIP_bam2geneprofile.py
+                      %(bam)s
+                      -I %(anno)s
+                      --exon-bins=10
+                      --flanks=100
+                      --flank-bins=10
+                      --scale-flanks
+                      --normalised_profile
+                      -S %(outfile)s
+                      -L %(outfile)s.log'''
+    P.run()
+
+
+###################################################################
+@merge(doHistoneMetaGene, "histones.dir/histone_profiles.load")
+def loadHistoneMetaGenes(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename="histones.dir/(.+-FLAG).(.+)_vs_(.+)_profile.tsv",
+                         cat="factor,replicate,geneset",
+                         options="-i factor -i replicate -i geneset")
+
+
 ###################################################################
 @follows(singleVsMultiExonGenes,
          normalised_profiles,
@@ -1261,7 +1352,7 @@ def runClippedGenesGO(infiles, outfile):
 
     track = re.match(".+/(.+).bam", infiles[0]).groups()[0]
     plot_out = P.snip(outfile, ".goseq.tsv") + ".pwf.png"
-    column = P.quote(track)
+    column = P.tablequote(track)
 
     statement = '''SELECT Geneid,
                           %s as clipped,
@@ -1296,7 +1387,7 @@ def runClustersGo(infiles, outfile):
 
     track = re.match(
         "cluster_hits/(.+).gene_hits.tsv.gz", infiles[0]).groups()[0]
-    column = P.quote(track)
+    column = P.tablequote(track)
 
     statement = '''SELECT ID,
                           clusters.%s as clipped,
@@ -2597,7 +2688,7 @@ def mergeSailfishFu(infiles, outfile):
                         for infile in infiles])
     statement = '''python %(scriptsdir)s/combine_tables.py
                     -c 1
-                    -k 3,7
+                    -k 3,4
                     --prefixes=%(headers)s
                     --regex-filename="hnrnpu1_Hela_(.+)_R1"
                     -L %(outfile)s.log

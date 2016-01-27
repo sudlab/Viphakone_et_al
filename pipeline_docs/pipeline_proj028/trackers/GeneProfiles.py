@@ -202,5 +202,18 @@ class HighlyExpressed3BiasGenes(ProjectTracker):
         
         return results.iloc[0:100].reset_index()
 
-        
+
+class HistoneMetaGenes(ProjectTracker):
+
+    def getTracks(self):
+        return self.getValues("SELECT DISTINCT factor FROM histone_profiles")
+
+    def getSlices(self):
+        return self.getValues("SELECT DISTINCT replicate FROM histone_profiles")
+
+    def __call__(self, track, slice=None):
+        print "called with %s, %s" % (track,slice)
+        statement = '''SELECT *  FROM histone_profiles WHERE factor = '%(track)s' AND replicate = '%(slice)s' '''
+        return self.getAll(statement % locals())
+
 
