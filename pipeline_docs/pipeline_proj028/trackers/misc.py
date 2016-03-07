@@ -98,7 +98,7 @@ statement_template = ''' SELECT DISTINCT counts.Geneid
                              FROM track_counts as counts
                                INNER JOIN annotations.gene_info as gi
                                on gi.gene_id = counts.Geneid
-                             WHERE      counts.HEK293_WT_1 > 0                                              AND
+                             WHERE      counts.HEK293_WT_1 > 0  AND
                                   %s_FLAG_%%(slice)s > 1 '''
  
 
@@ -113,4 +113,23 @@ class ClippedFractionOverlaps(ProjectTracker,TrackerMultipleLists):
     ListC = statement_template % "Nxf1"
 
     labels = ["Alyref", "Chtop", "Nxf1"]
+
+
+class UnclippedFraction(ProjectTracker, SQLStatementTracker):
+
+
+    fields = ("Gene ID",)
+    statement = ''' SELECT DISTINCT counts.Geneid as "Gene ID",
+                           gene_name as Symbol,
+                         (HEK293_banks_2_star + HEK293_banks_3_star + HEK293_banks_6_star +0.0)/3 as "RNA counts"
+                    FROM track_counts as counts
+                        INNER JOIN annotations.gene_info as gi
+                        ON gi.gene_id = counts.Geneid
+                    WHERE Nxf1_FLAG_union == 0 AND
+                          Alyref_FLAG_union  == 0 AND
+                          Chtop_FLAG_union == 0 AND
+                    "RNA counts" >= 1
+                    ORDER BY "RNA Counts" DESC '''
+
+
 

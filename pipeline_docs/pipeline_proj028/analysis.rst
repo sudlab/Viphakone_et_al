@@ -16,6 +16,7 @@ Contents:
    analysis/geneprofiles.rst
    analysis/rnaseq_normalization.rst
    analysis/trnas.rst
+   analysis/RetainedIntrons.rst
 
    analysis/Figures.rst
    

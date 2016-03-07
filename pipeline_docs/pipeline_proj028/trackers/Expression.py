@@ -230,3 +230,20 @@ class LongCDSExpressedGenes(ProjectTracker, SQLStatementTracker):
                           LIMIT 100'''
 
     fields = ('gene_id',)
+
+
+class ExpressionVsClipped(ProjectTracker, SQLStatementTracker):
+
+    statement = '''SELECT geneid,
+
+                          (HEK293_banks_2_star + 
+                           HEK293_banks_3_star + 
+                           HEK293_banks_6_star +0.0)/3 as "RNA counts",
+
+                           (Nxf1_FLAG_union == 0 AND
+                            Alyref_FLAG_union  == 0 AND
+                            Chtop_FLAG_union == 0) as clipped
+                  FROM track_counts 
+                  WHERE "RNA counts" >= 1
+                  '''
+    fields = ("clipped",)

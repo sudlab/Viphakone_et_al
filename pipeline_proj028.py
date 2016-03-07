@@ -457,7 +457,7 @@ def normalizedToRNASeq(infiles, outfiles):
         pseduo_count=1,
         submit=True,
         logfile=logfile,
-        job_options="-l mem_free=10G")
+        job_options="-l mem_free=20G")
 
 ###################################################################
 @follows(calculateSTOPProfiles,
@@ -2684,7 +2684,7 @@ def mergeSailfishFu(infiles, outfile):
 
     headers = ",".join([re.search("Hela_(.+)_R1", inf).groups()[0]
                         for inf in infiles])
-    infiles = " ".join(["<( tail -n +5 %s | sed 's/# //' )" % infile
+    infiles = " ".join(["<( tail -n +10 %s | sed 's/# //' )" % infile
                         for infile in infiles])
     statement = '''python %(scriptsdir)s/combine_tables.py
                     -c 1
