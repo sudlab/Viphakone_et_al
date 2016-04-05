@@ -541,7 +541,7 @@ def SingleVsMultiExonGeneProfiles(infiles, outfile):
     job_options = "-l mem_free=15G"
     bamfile, gtffile = infiles
     matrix_out = P.snip(outfile, ".tsv.gz") + ".matrix.tsv.gz"
-    statement = '''python %(project_src)s/iCLIP_bam2geneprofile.py
+    statement = '''python %(project_src)s/iCLIPlib/scripts/iCLIP_bam2geneprofile.py
                            -I %(gtffile)s
                            %(bamfile)s
                            --scale-flanks
@@ -959,7 +959,7 @@ def doHistoneMetaGene(infiles, outfile):
 
     bam, anno = infiles
 
-    statement = '''python %(project_src)s/iCLIP_bam2geneprofile.py
+    statement = '''python %(project_src)s/iCLIPlib/scripts/iCLIP_bam2geneprofile.py
                       %(bam)s
                       -I %(anno)s
                       --exon-bins=10
@@ -1174,7 +1174,7 @@ def countChunks(infiles, outfile):
     chunk, both for RNA and iCLIP'''
 
     bamfile, gtffile = infiles
-    statement = '''python %(project_src)s/count_clip_sites.py
+    statement = '''python %(project_src)s/iCLIPlib/scripts/count_clip_sites.py
                               %(bamfile)s
                               -I %(gtffile)s
                               --feature=exon
@@ -1229,7 +1229,7 @@ def annotateExonsChunks(infiles, outfile):
                            -I %(transcripts)s
                            -L %(outfile)s.log
                           --method=intersect-transcripts
-                          --with-utr 
+                         
                  | bedtools intersect -a %(chunks)s -b - -c
                  | sed -E 's/.+gene_id \\"(ENSG[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
                  | sed '1i gene_id\\texon_id\\texon'
@@ -1813,7 +1813,7 @@ def countSitesOntRNAs(infiles, outfile):
 
     bamfile, gtf = infiles
     logfile = P.snip(outfile,".tsv.gz") + ".log"
-    statement = '''python %(project_src)s/count_clip_sites.py
+    statement = '''python %(project_src)s/iCLIPlib/scripts/count_clip_sites.py
                           -I %(gtf)s
                           -L %(logfile)s
                           %(bamfile)s
@@ -2099,7 +2099,7 @@ def findUTRenrichedHexamers(infiles, outfile):
     bamfile, gtffile = infiles
     genome = os.path.join(PARAMS["genome_dir"],
                           PARAMS["genome"] + ".fasta")
-    statement = ''' python %(project_src)s/iCLIP_kmer_enrichment.py
+    statement = ''' python %(project_src)s/iCLIPlib/scripts/iCLIP_kmer_enrichment.py
                       -f %(genome)s
                       -b %(bamfile)s
                       -k 6
@@ -2124,7 +2124,7 @@ def findUTRenrichedOctamers(infiles, outfile):
     bamfile, gtffile = infiles
     genome = os.path.join(PARAMS["genome_dir"],
                           PARAMS["genome"] + ".fasta")
-    statement = ''' python %(project_src)s/iCLIP_kmer_enrichment.py
+    statement = ''' python %(project_src)s/iCLIPlib/scripts/iCLIP_kmer_enrichment.py
                       -f %(genome)s
                       -b %(bamfile)s
                       -k 8
@@ -2399,7 +2399,7 @@ def quantifyRetainedIntronCLIPTags(infiles, outfile):
     '''Count the number of CLIP tags in each reatined intron'''
 
     bamfile, gtffile = infiles
-    statement = '''python %(project_src)s/count_clip_sites.py
+    statement = '''python %(project_src)s/iCLIPlib/count_clip_sites.py
                               %(bamfile)s
                               -I %(gtffile)s
                               --feature=exon
