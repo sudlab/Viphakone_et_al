@@ -182,8 +182,8 @@ def scoreCircularCandidates(outfile):
     statement = ''' SELECT * FROM profile_summaries
                     WHERE Protein='%s' '''
 
-    chtop = DUtils.fetch_DataFrame(statement % "Chtop")
-    alyref = DUtils.fetch_DataFrame(statement % "Alyref")
+    chtop = DUtils.fetch_DataFrame(statement % "Chtop", "csvdb")
+    alyref = DUtils.fetch_DataFrame(statement % "Alyref", "csvdb")
    
     chtop_score = scoreRegions(chtop)
     alyref_score = scoreRegions(alyref)
@@ -821,12 +821,12 @@ def findhnRNPUDependentGenes(connection, outfile):
 #    ro.numpy2ri.activate()
 
     counts = DUtils.fetch_DataFrame(''' SELECT DISTINCT gene_id,
-                                              transcript,
-                                              WT_EstimatedNumReads as WT,
-                                              hnRNPU1kd_EstimatedNumReads as kd
+                                              Name as Transcript,
+                                              WT_NumReads as WT,
+                                              hnRNPU1kd_NumReads as kd
                                          FROM fuRNAseq as rna
                                          INNER JOIN biotypes
-                                           ON biotypes.transcript_id = rna.transcript ''',
+                                           ON biotypes.transcript_id = rna.Name ''',
                                     connection)
 
     counts = counts.drop("Transcript", axis=1)
@@ -1501,3 +1501,76 @@ Fold_change_cutoff=%(dapars_logfc_cutoff)s
         outf.write(DaPars_config_template % local_params)
         
     
+def get3UTRs(infile, outfile):
+    ''' flatten the gene so that all the coding regions are collapsed
+    and extract the remaining exon sequence after the end of the last cds
+    entry in the GTF - that sequence that is always UTR'''
+
+    with IOTools.openFile(outfile, "w") as outf:
+        for gene in GTF.flat_gene_iterator(
+                GTF.iterator(IOTools.openFile(infile))):
+            cds = GTF.asRanges(gene, "CDS")
+            
+            if len(cds) == 0:
+                continue
+
+            exons = GTF.asRanges(gene, "exon")
+
+            introns = []
+
+            for transcript in GTF.transcript_iterator(gene):
+                intron = GTF.toIntronIntervals(transcript)
+                introns.extend(intron)
+
+            introns = Intervals.combine(introns)
+            exons = Intervals.truncate(exons, introns)
+            utrs = Intervals.truncate(exons, cds)
+
+            if len(utrs) == 0:
+                continue
+
+            if gene[0].strand == "+":
+                utr3 = [utr for utr in utrs if utr[0] >= cds[-1][1]]
+            else:
+                utr3 = [utr for utr in utrs if utr[1] <= cds[0][0]]
+
+            template = GTF.Entry().fromGTF(gene[0])
+            template.feature = "exon"
+
+            for exon in utr3:
+                template.start = exon[0]
+                template.end = exon[1]
+                outf.write(str(template) + "\n")
+
+
+def find_final_cleavage_sites(geneset_gtf, cleavagesite_bed,
+                              outfile):
+    '''Iterate through geneset and isolate overlapping cleavage sites
+    and select the 3' most of the sites'''
+
+    sites = Bed.readAndIndex(IOTools.openFile(cleavagesite_bed),
+                             with_values=True)
+
+    with IOTools.openFile(outfile, "w") as outfile:
+
+        for gene in GTF.flat_gene_iterator(
+                GTF.iterator(IOTools.openFile(geneset_gtf))):
+
+            start = min([exon.start for exon in gene])
+            end = max([exon.end for exon in gene])
+
+            overlapping_sites = list(sites[gene[0].contig].find(start, end))
+            overlapping_sites = [site for _, _, site in overlapping_sites]
+            overlapping_sites = [site for site in overlapping_sites
+                                 if site.strand == gene[0].strand]
+
+            if len(overlapping_sites) == 0:
+                continue
+
+            overlapping_sites = sorted(overlapping_sites,
+                                       key=lambda x: x.start)
+
+            if gene[0].strand == "-":
+                outfile.write(str(overlapping_sites[0]) + "\n")
+            else:
+                outfile.write(str(overlapping_sites[-1]) + "\n")

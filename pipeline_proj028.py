@@ -137,7 +137,7 @@ PARAMS_ANNOTATIONS = P.peekParameters(PARAMS["annotations_dir"],
                                       "pipeline_annotations.py",
                                       on_error_raise=True)
 
-
+PARAMS["project_src"] = os.path.dirname(__file__)
 PipelineiCLIP.PARAMS = PARAMS
 PipelineMotifs.PARAMS = PARAMS
 PipelineGO.PARAMS = PARAMS
@@ -457,7 +457,7 @@ def normalizedToRNASeq(infiles, outfiles):
         pseduo_count=1,
         submit=True,
         logfile=logfile,
-        job_options="-l mem_free=20G")
+        job_memory="25G")
 
 ###################################################################
 @follows(calculateSTOPProfiles,
@@ -529,31 +529,27 @@ def getMultiExonGeneModels(infiles, outfile):
 
 
 ###################################################################
-@product(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
+@product([os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
+          "*.bam"],
          formatter(".+/(?P<TRACK>.+)\.bam"),
          [getSingleExonGeneModels, getMultiExonGeneModels],
          formatter("expressed_transcripts.(?P<GTF>.+).gtf.gz"),
-         "gene_profiles.dir/{TRACK[0][0]}.{GTF[1][0]}.geneprofile.matrix.tsv.gz")
+         "gene_profiles.dir/{TRACK[0][0]}.{GTF[1][0]}.geneprofile.tsv.gz")
 def SingleVsMultiExonGeneProfiles(infiles, outfile):
     ''' Do metagene profiles for single and multi exon genes '''
 
     job_options = "-l mem_free=15G"
     bamfile, gtffile = infiles
-    outfile = P.snip(outfile, ".geneprofile.matrix.tsv.gz")
-    statement = '''python %(scriptsdir)s/bam2geneprofile.py
-                          --method=geneprofile
-                          --bam-file=%(bamfile)s
-                          --gtf-file=%(gtffile)s 
-                          --normalize-transcript=total-max
-                          --use-base-accuracy
-                          --normalize-profile=area
-                          --scale-flank-length=1
-                          --resolution-cds=250
-                          --resolution-downstream=250
-                          --resolution-upstream=250
-                          --output-filename-pattern=%(outfile)s.%%s
-                          --log=%(outfile)s.log 
-                          --output-all-profiles '''
+    matrix_out = P.snip(outfile, ".tsv.gz") + ".matrix.tsv.gz"
+    statement = '''python %(project_src)s/iCLIP_bam2geneprofile.py
+                           -I %(gtffile)s
+                           %(bamfile)s
+                           --scale-flanks
+                           --output-matrix=%(matrix_out)s
+                           -S %(outfile)s
+                           -b 25
+                           --flank-bins=25
+                           --normalised_profile '''
 
     P.run()
 
@@ -565,38 +561,13 @@ def loadSingleVsMultiExonGeneProfiles(infiles, outfile):
 
     P.concatenateAndLoad(infiles,
                          outfile,
-                         regex_filename="(.+)-FLAG.(.+)\.(single|multi)_",
+                         regex_filename="(.+-FLAG).(.+)\.(single|multi)_",
                          cat="factor,replicate,exons",
                          options="-i factor -i replicate -i exons -i bin")
 
 
 ###################################################################
-@subdivide(calculateCDSProfiles, 
-           regex("gene_profiles.dir/(.+-FLAG-R[0-9]+).CDS_profile.log"),
-           inputs([r"gene_profiles.dir/\1.utrprofile.profiles.tsv.gz",
-                   r"gene_profiles.dir/%s.utrprofile.profiles.tsv.gz" %
-                   P.snip(glob.glob("*.bam")[0])]),
-           [r"gene_profiles.dir/\1.single_exon.matrix.tsv.gz",
-            r"gene_profiles.dir/\1.single_exon.profile.tsv.gz"])
-def getSingleExonProfiles(infiles, outfiles):
-    ''' Normalise each bin to the corresponding bin in RNAseq data '''
-
-    logfile = P.snip(outfiles[0],"matrix.tsv.gz") + ".log"
-    PipelineProj028.getSingleExonProfiles(
-        infiles[0],
-        infiles[1],
-        outfile_matrix=outfiles[0],
-        outfile_summary=outfiles[1],
-        annotations = PARAMS["annotations_database"],
-        pseduo_count=1,
-        submit=True,
-        logfile=logfile,
-        job_options="-l mem_free=15G")
-
-
-###################################################################
-@follows(loadSingleVsMultiExonGeneProfiles,
-         getSingleExonProfiles)
+@follows(loadSingleVsMultiExonGeneProfiles)
 def singleVsMultiExonGenes():
     pass
 
@@ -637,7 +608,8 @@ def getTranscriptsBinnedByLength(infiles, outfiles):
 
     tlens = DUtils.fetch_DataFrame('''SELECT transcript_id, sum as elen, nval
                                    FROM expressed_transcripts_stats
-                                   WHERE source = 'protein_coding' ''')
+                                   WHERE source = 'protein_coding' ''', 
+                                   connect())
 
     statement_template = ''' python %%(scriptsdir)s/gtf2gtf.py
                                    --method=filter
@@ -712,9 +684,11 @@ def quantileProfiles():
 # Exon Junction Profiles
 ###################################################################
 @follows(mkdir("transcriptome.dir"))
-@transform(os.path.join(PARAMS["dir_transcriptome"],
-                        "*-FLAG-R?.*.bam"),
-           regex(".+/(.+-FLAG-R.)\..+\.bam"),
+@transform(os.path.join(PARAMS["iclip_dir"],
+                        "deduped.dir/*-FLAG-R*.bam"),
+           regex(".+/(.+-FLAG-R.)\.bam"),
+           inputs(os.path.join(PARAMS["dir_transcriptome"],
+                               r"\1.bwa.bam")),
            r"transcriptome.dir/\1.bam")
 def dedupAndSplitTranscriptome(infile, outfile):
     '''UMI dedup the transcriptome mapping bams and split multiple 
@@ -733,9 +707,9 @@ def dedupAndSplitTranscriptome(infile, outfile):
 
                    checkpoint;
 
-                   python %(project_src)s/dedup_umi.py
+                   umi_tools dedup
                           -I %(track)s.tmp.bam
-                          --cluster-umis
+                          --method=directional-adjacency
                           -L %(track)s.log
                  | samtools sort -o %(outfile)s
                                  -T %(track)s;
@@ -2104,6 +2078,84 @@ def RIZagros():
     pass
 
 
+@transform(filterExpressedTranscripts,
+           regex(".+"),
+           r"expressed.3utrs.gtf.gz")
+def get3UTRs(infile, outfile):
+
+    PipelineProj028.get3UTRs(infile, outfile)
+
+
+###################################################################
+@follows(mkdir("utr_motifs.dir"))
+@transform(os.path.join(PARAMS["iclip_dir"],
+                        "deduped.dir/*.bam"),
+           regex(".+/(.+).bam"),
+           add_inputs(get3UTRs),
+           r"utr_motifs.dir/\1.6mers.tsv.gz")
+def findUTRenrichedHexamers(infiles, outfile):
+    ''' Use clip site randomisation to measure enrichment of pentamers '''
+
+    bamfile, gtffile = infiles
+    genome = os.path.join(PARAMS["genome_dir"],
+                          PARAMS["genome"] + ".fasta")
+    statement = ''' python %(project_src)s/iCLIP_kmer_enrichment.py
+                      -f %(genome)s
+                      -b %(bamfile)s
+                      -k 6
+                      -p 6
+                      -I %(gtffile)s
+                      -S %(outfile)s
+                      -L %(outfile)s.log'''
+
+    job_threads = 6
+    P.run()
+
+###################################################################
+@follows(mkdir("utr_motifs.dir"))
+@transform(os.path.join(PARAMS["iclip_dir"],
+                        "deduped.dir/*.bam"),
+           regex(".+/(.+).bam"),
+           add_inputs(get3UTRs),
+           r"utr_motifs.dir/\1.8mers.tsv.gz")
+def findUTRenrichedOctamers(infiles, outfile):
+    ''' Use clip site randomisation to measure enrichment of pentamers '''
+
+    bamfile, gtffile = infiles
+    genome = os.path.join(PARAMS["genome_dir"],
+                          PARAMS["genome"] + ".fasta")
+    statement = ''' python %(project_src)s/iCLIP_kmer_enrichment.py
+                      -f %(genome)s
+                      -b %(bamfile)s
+                      -k 8
+                      -p 6
+                      -I %(gtffile)s
+                      -S %(outfile)s
+                      -L %(outfile)s.log'''
+
+    job_threads = 6
+    job_memory = "0.3G"
+
+    P.run()
+
+
+###################################################################
+@merge([findUTRenrichedHexamers,
+        findUTRenrichedOctamers],
+       "utr_motifs.dir/utr_kmers.load")
+def loadUTRPentamers(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+).([0-9]+)mers.tsv.gz",
+                         cat="track,k")
+
+
+###################################################################
+@follows(loadUTRPentamers)
+def pentamers():
+    pass
+
+
 ###################################################################
 @transform([os.path.join(PARAMS["iclip_dir"], "clusters.dir/*.bed.gz"),
             getUnionClusters],
@@ -2412,9 +2464,11 @@ def retained_introns():
     pass
 
 
+
 ###################################################################
-@follows( #RIZagros,
-         interval_sets)
+@follows(interval_sets,
+         pentamers)
+        
 def motifs():
     pass
 
@@ -2912,6 +2966,74 @@ def runDaPars(infile, outfile):
     statement = '''DaPars_main.py %(infile)s > %(infile)s.log'''
     P.run()
 
+
+###################################################################
+###################################################################
+# Processing Index
+###################################################################
+@follows(mkdir("processing_index.dir"))
+@originate("processing_index.dir/HEK293_cleavage_sites.bed.gz")
+def download_cleavage_sites(outfile):
+    '''Download A-seq cleavage site data from GSM909242'''
+
+    statement = '''wget ftp://ftp.ncbi.nlm.nih.gov/geo/samples/GSM909nnn/GSM909242/suppl/GSM909242%%5F178%%2Ebed%%2Egz;
+                mv GSM909242_178.bed.gz %(outfile)s'''
+
+    P.run()
+
+
+###################################################################
+@transform(download_cleavage_sites,
+           suffix(".bed.gz"),
+           add_inputs(filterExpressedTranscripts),
+           ".3prime.bed.gz")
+def get_3prime_cleavage_sites(infiles, outfile):
+    '''For each expressed gene find the 3'-most cleavage site'''
+
+    cleavage_sites, geneset = infiles
+    PipelineProj028.find_final_cleavage_sites(geneset, cleavage_sites,
+                                              outfile)
+ 
+   
+###################################################################
+@transform(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
+           regex(".+/(.+).bam"),
+           add_inputs(get_3prime_cleavage_sites),
+           r"processing_index.dir/\1.tsv")
+def get_processing_index(infiles, outfile):
+    '''Calculate processing_index for each bam file using
+    3' most cleavage sites'''
+
+
+    bamfile, sites = infiles
+
+    statement = '''python %(project_src)s/iCLIPlib/scripts/processing_index.py
+                             -I %(sites)s
+                             -L %(outfile)s.log
+                             -S %(outfile)s
+                             %(bamfile)s'''
+
+    P.run()
+
+
+###################################################################
+@merge(get_processing_index, "processing_index.dir/processing_index.load")
+def load_processing_index(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+)-FLAG.(.+).tsv",
+                         cat="factor,replicate",
+                         has_titles=False,
+                         header="factor,replicate,stat,filename,processing_index",
+                         options="-i factor -i replicate")
+
+
+###################################################################
+@follows(load_processing_index)
+def processing_index():
+    pass
+
+
 ###################################################################
 # Export
 ###################################################################
@@ -3104,7 +3226,10 @@ def export():
          motifs,
          NSUN6,
          hnRNPU1,
-         export)
+         transcript_chunks,
+         processing_index,
+         export,
+         loadStubbsProfiles)
 def full():
     pass
 
