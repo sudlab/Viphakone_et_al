@@ -30,7 +30,7 @@ class KDVsNuclearLinc(ProjectTracker, SQLStatementTracker):
                            gi.gene_name as symbol,
                            nuc.log2FoldChange as nuclear,
                            nuc.padj as nuclear_padj,
-                           (sum(kd.hnrnpu1kd_EstimatedNumReads) + 1)/(sum(kd.WT_EstimatedNumReads)+1) as KD,
+                           (sum(kd.hnrnpu1kd_NumReads) + 1)/(sum(kd.WT_NumReads)+1) as KD,
                            biotype,
                            CASE WHEN nuc.log2FoldChange >= 2 THEN 'Nuclear'
                                 WHEN nuc.log2FoldChange < 2 THEN 'Cytoplasmic'
@@ -41,11 +41,11 @@ class KDVsNuclearLinc(ProjectTracker, SQLStatementTracker):
                            biotypes ON nuc.gene_id = biotypes.gene_id
                            INNER JOIN
                            fuRNAseq as kd
-                           on kd.Transcript = biotypes.transcript_id
+                           on kd.Name = biotypes.transcript_id
                            INNER JOIN annotations.gene_info as gi
                            ON gi.gene_id = biotypes.gene_id 
                    WHERE nuc.baseMean > 50 AND
-                         (kd.hnrnpu1kd_EstimatedNumReads + kd.WT_EstimatedNumReads) > 100 AND
+                         (kd.hnrnpu1kd_NumReads + kd.WT_NumReads) > 100 AND
                          gene_biotype IN ('lincRNA','antisense')
                    GROUP BY nuc.gene_id'''
 
@@ -57,7 +57,7 @@ class KDVsNuclear(ProjectTracker, SQLStatementTracker):
                            biotypes.gene_id as gene_id,
                            nuc.log2FoldChange as nuclear,
                            nuc.padj as nuclear_padj,
-                           (sum(kd.hnrnpu1kd_EstimatedNumReads) + 0.1)/(sum(kd.WT_EstimatedNumReads)+0.1) as KD,
+                           (sum(kd.hnrnpu1kd_NumReads) + 0.1)/(sum(kd.WT_NumReads)+0.1) as KD,
                            biotype
                     FROM
                            fraction_diff_deseq as nuc
@@ -65,13 +65,13 @@ class KDVsNuclear(ProjectTracker, SQLStatementTracker):
                            biotypes ON nuc.gene_id = biotypes.gene_id
                            INNER JOIN
                            fuRNAseq as kd
-                           on kd.Transcript = biotypes.transcript_id 
+                           on kd.Name = biotypes.transcript_id 
                    WHERE nuc.baseMean > 50 AND
-                         (kd.hnrnpu1kd_EstimatedNumReads + kd.WT_EstimatedNumReads) > 100 
+                         (kd.hnrnpu1kd_NumReads + kd.WT_NumReads) > 100 
                       
                    GROUP BY nuc.gene_id'''
 
-class AlyrefVsChTopVsLocalisation(ProjectTracker, SQLStatementTracker):
+class AlyrefVsChTopVsLocalisation (ProjectTracker, SQLStatementTracker):
     fields = ('gene_id', )
 
     statement = '''SELECT DISTINCT

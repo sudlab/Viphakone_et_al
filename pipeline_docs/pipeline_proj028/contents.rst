@@ -2,6 +2,8 @@
 Contents
 ==========
 
+The analysis section contains fully fleshed out and commented results, the pipeline section is a dump for all analysis conducted.
+
 Contents
 =========
 

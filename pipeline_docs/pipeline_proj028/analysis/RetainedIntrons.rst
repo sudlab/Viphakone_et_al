@@ -138,7 +138,7 @@ We have looked at the metagene profile around exon-exon boundaries. This is what
    :render: r-ggplot
    :groupby: all
    :slices: union
-   :statement: aes(x=position, y=density) + stat_summary(fun.y="mean", geom = "line") + facet_wrap(~track, scale="free_y") + theme_bw() + geom_vline(xinterscept=c(0,-24), lty=2, lwd=0.5)
+   :statement: aes(x=position, y=density) + stat_summary(fun.y="mean", geom = "line") + facet_wrap(~track, scale="free_y") + theme_bw() + geom_vline(xintercept=c(0,-24), lty=2, lwd=0.5)
 
    Metagene profile centred on exon-exon junctions
 
@@ -170,7 +170,7 @@ Looking at read through and inaccurate termination is on my list of things to do
 .. report:: GeneProfiles.StubbsProfiles
    :render: r-ggplot
    :groupby: all
-   :statement: aes(bin,area, col=condition) + geom_line() + facet_grid(fraction~.) + geom_vline(mapping=aes(xintercept=c(1000,2000)),lty=2) + theme_bw() + scale_x_continuous(breaks=c(500,1500,2500), labels=c("upstream","CDS","downstream"), name = "") + scale_y_continuous(labels=NULL, name="relative read density")
+   :statement: aes(bin,area, col=condition) + geom_line() + facet_grid(fraction~.) + geom_vline(xintercept=c(1000,2000),lty=2) + theme_bw() + scale_x_continuous(breaks=c(500,1500,2500), labels=c("upstream","CDS","downstream"), name = "") + scale_y_continuous(labels=NULL, name="relative read density")
 
    Metagene profiles from the conrad data
 

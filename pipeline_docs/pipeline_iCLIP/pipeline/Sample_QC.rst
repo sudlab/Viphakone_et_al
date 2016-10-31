@@ -65,61 +65,13 @@ Reads Per Sample
 
    Percent of deduped reads spliced
 
-.. report:: Sample_QC.ReadLengths
+.. report:: Sample_QC.MappedFragLength
    :render: r-ggplot
    :transform: melt
    :statement: aes(x=track, y=value/sum(variable), fill=Slice) + geom_bar(position="fill", stat="identity") + ylab("Fraction of reads") + scale_fill_discrete(name="Length bin (bp)") + coord_flip() + theme_bw()
 
    Read length distribution of unmapped reads
 
-
-
-
-Saturation Analysis
---------------------
-
-.. report:: Sample_QC.AlignmentSaturation
-   :render: r-ggplot
-   :groupby: all
-   :statement: aes(x=subset, y=counts, color = factor, shape = factor) + geom_point() + geom_line() + facet_wrap(~replicate) + theme_bw() + theme(aspect.ratio = 1)
-
-   Subsampling of alignments
-
-
-.. report:: Sample_QC.AlignmentSaturation
-   :render: r-ggplot
-   :groupby: all
-   :statement: aes(x=counts/subset, y=counts, color = factor, shape = factor) + geom_point() + geom_line() + facet_wrap(~replicate) + theme_bw() + theme(aspect.ratio = 1)
-
-   Tests for model assumptions
-
-
-.. report:: Sample_QC.LibrarySize_Binom
-   :render: r-ggplot
-   :statement: aes(x=subset, y=alignments) + geom_point() + geom_line(aes(y=expected_unique)) + geom_hline(yintercept=rframe$library_size[1]) + theme_bw()
-   :width: 200
-   :layout: column-4
-   
-
-   curve fits for saturation using Binomal distribution
-
-
-
-.. report:: Sample_QC.LibrarySize_mm
-   :render: r-ggplot
-   :statement: aes(x=subset, y=alignments) + geom_point() + geom_line(aes(y=expected_unique)) + geom_hline(yintercept=rframe$library_size[1]) + theme_bw()
-   :width: 200
-   :layout: column-4
-
-   curve fits for saturation using reciprical fit
-
-
-.. report:: Sample_QC.mm_fit_stats
-   :render: r-ggplot
-   :groupby: all
-   :statement: aes(x=track, y=Library.Size) + geom_bar(stat="identity") + geom_bar(aes(y=Library.Size*Percent.Saturation/100), stat="identity", fill = "orange") + theme_bw() + theme(axis.text.x = element_text(angle=90))
-
-   Library size estimates
 
 Context Stats
 ---------------

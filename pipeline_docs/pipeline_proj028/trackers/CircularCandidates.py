@@ -1,8 +1,7 @@
 from ProjectTracker import *
 
 from rpy2.robjects.packages import importr
-import pandas.rpy.common as com
-import rpy2.robjects as ro
+from rpy2.robjects import r as R
 
 
 
@@ -88,9 +87,8 @@ class GenomePlot(ProjectTracker):
         if not os.path.exists(db_name):
             print "Making Transcription Database"
             GenomicFeatures = importr("GenomicFeatures")
-            txdb = GenomicFeatures.makeTranscriptDbFromGFF(self.annotations,
-                                                           format = "gtf",
-                                                           exonRankAttribute="exon_number")
+            txdb = GenomicFeatures.makeTxDbFromGFF(self.annotations,
+                                                   format = "gtf")
             self.txdb = txdb
             print "Caching Annotation Database"
             AnnotationDbi.saveDb(txdb, db_name)
@@ -205,7 +203,7 @@ class CircularCandidates(GenomePlot):
         files = alyref + chtop + nxf1
         files = [f for f in files if "R1" not in f]
 
-        tracks = [re.match("(?:.+/)?(.+)-FLAG-R(.+)_(plus|minus).bw", f).groups()
+        tracks = [re.match("(?:.+/)?(.+)-FLAG.([Ru].+)_(plus|minus).bw", f).groups()
                   for f in files]
         print tracks
         track_names = [factor + " " + replicate if strand == "plus"

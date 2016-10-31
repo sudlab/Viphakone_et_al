@@ -7,7 +7,7 @@ import CGAT.Experiment as E
 import CGAT.GTF as GTF
 import CGAT.Bed as Bed
 import CGAT.FastaIterator as FastaIterator
-import iCLIP
+import iCLIP as iCLIP
 import CGAT.Intervals as Intervals
 import collections
 import pysam
@@ -1574,3 +1574,157 @@ def find_final_cleavage_sites(geneset_gtf, cleavagesite_bed,
                 outfile.write(str(overlapping_sites[0]) + "\n")
             else:
                 outfile.write(str(overlapping_sites[-1]) + "\n")
+
+
+@cluster_runnable
+def ExonRatio(bamfile, gtffile, outfile):
+
+    bamfile = pysam.AlignmentFile(bamfile)
+    outlines = []
+
+    for gene in GTF.transcript_iterator(GTF.iterator(IOTools.openFile(gtffile))):
+
+        strand = gene[0].strand
+        contig = gene[0].contig
+        
+        exons = GTF.asRanges(gene, "exon")
+        introns = GTF.toIntronIntervals(gene)
+
+        if len(exons) == 1:
+            continue
+
+        if gene[0].strand == "+":
+            first_exon = exons[1]
+            first_intron = introns[0]
+        else:
+            first_exon = exons[-2]
+            first_intron = introns[-1]
+
+        exon_counts = iCLIP.count_intervals(bamfile,
+                                            [first_exon],
+                                            strand=strand,
+                                            contig=contig).sum()
+        intron_counts = iCLIP.count_intervals(bamfile,
+                                              [first_intron],
+                                              strand=strand,
+                                              contig=contig).sum()
+        
+        first_exon_length = first_exon[1] - first_exon[0]
+        first_intron_length = first_intron[1] - first_intron[0]
+
+        outlines.append([gene[0].transcript_id, exon_counts, first_exon_length,
+                         intron_counts, first_intron_length])
+
+    IOTools.writeLines(outfile, outlines,
+                       header=["gene_id", "exon_counts", "exon_length",
+                               "intron_counts", "intron_length"])
+
+
+@cluster_runnable
+def get_first_exon(infile, outfile):
+
+    outfile = IOTools.openFile(outfile, "w")
+
+    for gene in GTF.flat_gene_iterator(GTF.iterator(IOTools.openFile(infile))):
+        
+        gene = [exon for exon in gene if exon.feature == "exon"]
+        gene = GTF.CombineOverlaps(gene)
+        
+        if gene[0].strand == "-":
+            gene = sorted(gene, key=lambda x: x.end, reverse=True)
+        else:
+            gene = sorted(gene, key=lambda x: x.start)
+
+        if len(gene == 1):
+            continue
+
+        outfile.write(str(gene[0]) + "\n")
+
+
+def find_exon_ratios(infile, outfile):
+    '''find the ratio of exons in genes in infile'''
+
+    firsts, lasts = [], []
+
+    for transcript in GTF.flat_gene_iterator(
+                         GTF.iterator(
+                             IOTools.openFile(infile))):
+        if not transcript[0].source == "protein_coding":
+            continue
+
+        exons = GTF.asRanges(transcript, "exon")
+        if len(exons) <= 2:
+            continue
+
+        first_exon = exons[0]
+        last_exon = exons[-1]
+
+        if transcript[0].strand == "-":
+            first_exon, last_exon = last_exon, first_exon
+
+        middle_exons = exons[1:-1]
+
+        first_len = first_exon[0] - first_exon[1]
+        last_len = last_exon[0] - last_exon[1]
+        middle_len = sum(e[0] - e[1] for e in middle_exons)
+
+        first_ratio = float(first_len)/middle_len
+        last_ratio = float(last_len)/middle_len
+
+        firsts.append(first_ratio)
+        lasts.append(last_ratio)
+
+    first_median = np.median(firsts)
+    lasts_median = np.median(lasts)
+
+    with IOTools.openFile(outfile, "w") as outf:
+        outf.write("\t".join(map(str, (first_median, 1.0, lasts_median))))
+
+
+@cluster_runnable
+def get_first_last_counts(bamfile, gtffile, outfile):
+
+    getter = iCLIP.make_getter(bamfile=bamfile, centre="GFP" in bamfile)
+    outlines = []
+
+    for gene in GTF.flat_gene_iterator(GTF.iterator(
+            IOTools.openFile(gtffile))):
+        exons = GTF.asRanges(gene, "exon")
+
+        if not gene[0].source == "protein_coding":
+            continue
+
+        if len(exons) <= 2:
+            continue
+
+        contig = gene[0].contig
+        strand = gene[0].strand
+
+        first = iCLIP.count_intervals(getter,
+                                      [exons[0]],
+                                      contig=contig,
+                                      strand=strand).sum()
+
+        middle = iCLIP.count_intervals(getter,
+                                       exons[1:-1],
+                                       contig=contig,
+                                       strand=strand).sum()
+
+        last = iCLIP.count_intervals(getter,
+                                     [exons[-1]],
+                                     contig=contig,
+                                     strand=strand).sum()
+
+        introns = iCLIP.count_intervals(getter,
+                                        GTF.toIntronIntervals(gene),
+                                        contig=contig,
+                                        strand=strand).sum()
+        outlines.append(map(str,
+                            [gene[0].gene_id, first, middle, last, introns]))
+
+    IOTools.writeLines(
+        outfile, outlines,
+        header=["gene_id", "first_exon",
+                "middle_exon", "last_exon", "introns"])
+
+

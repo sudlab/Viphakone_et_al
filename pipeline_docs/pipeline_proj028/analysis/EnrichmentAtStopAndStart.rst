@@ -40,7 +40,7 @@ A different way to approach this would be to normalize for each transcripts UTR 
    :regex: gene_profiles.dir/(.+).utr
    :glob: gene_profiles.dir/*FLAG*.utrprofile.matrix.tsv.gz
    :groupby: all
-   :statement: aes(bin, track, fill=normalized) + geom_raster() + scale_x_continuous(labels=c("upstream", "5 UTR", "CDS", "3 UTR", "downstream"), breaks=c(500,1100,1700,2550,3400)) + theme_bw() + theme( aspect.ratio = 0.5, legend.position = "none") + xlab("") + ylab("") + geom_vline(mapping=aes(xintercept=c(1000,1200,2200,2900,3900)), col = "white", lwd=0.25, lty=2) + scale_fill_gradientn(colours=c("black","#56B1F7"))
+   :statement: aes(bin, track, fill=normalized) + geom_raster() + scale_x_continuous(labels=c("upstream", "5 UTR", "CDS", "3 UTR", "downstream"), breaks=c(500,1100,1700,2550,3400)) + theme_bw() + theme( aspect.ratio = 0.5, legend.position = "none") + xlab("") + ylab("") + geom_vline(xintercept=c(1000,1200,2200,2900,3900), col = "white", lwd=0.25, lty=2) + scale_fill_gradientn(colours=c("black","#56B1F7"))
 
    UTR/CDS profiles, normalised using average RNASeq profile
 

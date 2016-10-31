@@ -1,7 +1,7 @@
-.. _proj028analysis:
+.. _proj028pipeline:
 
 =============================
-Analysis
+Pipeline
 =============================
 
 Contents:
@@ -22,6 +22,11 @@ Contents:
    pipeline/hnrnpu1.rst
    pipeline/unmapped_composition.rst
    pipeline/expression.rst
+   pipeline/processing_index.rst
+   pipeline/encode_eclip.rst
+   pipeline/intron_exon_ratio.rst
+   pipeline/heatmaps.rst
+   pipeline/first_and_last_exons.rst
    pipeline/misc.rst
 
   

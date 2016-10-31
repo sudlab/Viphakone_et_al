@@ -11,7 +11,7 @@ Expression was first calculated as the RNA-seq counts: this is a convolution of 
 .. report:: Expression.ProbOfClipByExpression
    :render: r-ggplot
    :groupby: all
-   :statement: aes(x=expression+1, y=clip) + geom_point() + facet_wrap(~track) + xlab("Expression decile") + scale_x_continuous(breaks=1:10)
+   :statement: aes(x=expression, y=clip) + geom_point() + facet_wrap(~track) + xlab("Expression decile") + scale_x_discrete(breaks=1:10)
 
    Effect of RNA-seq count rank on probability of CLIP
 
@@ -20,7 +20,7 @@ Then expression was calculated as sailfish TPMs: this excludes length from the i
 .. report:: Expression.ProbOfClipTPM
    :render: r-ggplot
    :groupby: all
-   :statement: aes(x=expression, y=clip) + geom_point() + facet_wrap(~track)+ xlab("Expression decile") + scale_x_continuous(breaks=1:10)
+   :statement: aes(x=expression, y=clip) + geom_point() + facet_wrap(~track)+ xlab("Expression decile") + scale_x_discrete(breaks=1:10)
 
    Effect of RNA-seq TPM rank on probability of CLIP.
 
@@ -35,7 +35,7 @@ Each transcript was divided into non-overlapping chunks, such that each chunk re
    :render: r-ggplot
    :tracks: r(_union)
    :groupby: track
-   :statement: aes(RNA+1,iCLIP+1, color = factor(Constitutive_exon), fill = factor(Constitutive_exon)) + stat_binhex(aes(alpha=log2(..count..)),color=NA) + geom_smooth() + scale_x_log10() + scale_y_log10() + theme_bw() + scale_color_discrete(labels=c("1"="Exon","0"="Intron"),name="") + scale_fill_manual( values=c("1"="#FFD500","0"="#002BFF"), labels=c("1"="Exon","0"="Intron"), name = "") + theme(legend.position="bottom", aspect.ratio=1)  + facet_wrap(~slice) + scale_alpha(range=c(0,0.7), guide=F)
+   :statement: aes(RNA+1,iCLIP+1, color = factor(Constitutive_exon), fill = factor(Constitutive_exon)) + stat_binhex(aes(alpha=log2(..value..)),color=NA) + geom_smooth() + scale_x_log10() + scale_y_log10() + theme_bw() + scale_color_discrete(labels=c("1"="Exon","0"="Intron"),name="") + scale_fill_manual( values=c("1"="#FFD500","0"="#002BFF"), labels=c("1"="Exon","0"="Intron"), name = "") + theme(legend.position="bottom", aspect.ratio=1)  + facet_wrap(~slice) + scale_alpha(range=c(0,0.7), guide=F)
 
    RNA-seq vs iCLIP for each transcript chunk
 

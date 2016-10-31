@@ -23,14 +23,12 @@ class SingleVsMultiExonProfiles(TrackerSQL):
 
     def __call__(self, track, slice):
 
-        statement = '''SELECT bin, area, region, exons
+        statement = '''SELECT bin, density, region, exons
                        FROM single_vs_multi_exon_gene_profiles
                        WHERE replicate='%(slice)s' AND factor='%(track)s' '''
 
         df = self.getDataFrame(statement)
         
-        df["area"] = pandas.rolling_mean(df["area"], window=10)
-
         return df
 
 
@@ -42,7 +40,7 @@ class AverageSingleVsMultiExonProfiles(TrackerSQL):
 
     def __call__(self, track):
         
-        statement = '''SELECT bin, area, region, exons, replicate
+        statement = '''SELECT bin, density, region, exons, replicate
                        FROM single_vs_multi_exon_gene_profiles
                        WHERE factor='%(track)s' '''
 
@@ -50,8 +48,7 @@ class AverageSingleVsMultiExonProfiles(TrackerSQL):
 
         df = df.groupby(["exons","bin"]).mean()
         df = df.reset_index()
-        df = df.set_index(["bin","exons"]).groupby(
-            level="exons").transform(lambda x: pandas.rolling_mean(x, window=10)).reset_index()
+ 
         return df
 
 
@@ -118,6 +115,31 @@ class ExonBoundaryProfiles(ProjectTracker):
 
         return results
 
+
+class FirstExonBoundaryProfiles(ProjectTracker, SQLStatementTracker):
+
+    statement = '''SELECT protein, replicate, base, density 
+                   FROM first_exon_profiles'''
+    fields = ('protein',)
+
+
+class FirstExonBoundaryProfiles2(TrackerDataframes):
+
+    glob = "heatmaps/*.first_exon.end.matrix.tsv.gz"
+    regex = "heatmaps/(.+).first_exon.end.matrix.tsv.gz"
+
+    def __call__(self, track):
+
+        df = pandas.read_csv("heatmaps/%s.first_exon.end.matrix.tsv.gz" % track,
+                             sep='\t',
+                             index_col=0)
+
+        df.columns = df.columns.astype("float")
+        rowsums= df.sum(axis=1)
+        df_normed = df.div(rowsums.astype("float"), axis=0)
+        df_summed = df_normed.sum()
+        df_summed.name="density"
+        return df_summed.reset_index().query("index > -200 & index < 50", engine="python")
 
     
 class TranscriptomeExonBoundaryProfiles(ExonBoundaryProfiles):

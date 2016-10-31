@@ -40,7 +40,7 @@ For Alyref, it is clear that the 5' bias gets substainally stronger with increas
    :render: r-ggplot
    :groupby: track
    :tracks: Alyref-FLAG
-   :statement: aes(x=bin, y=area, col=factor(quantile, levels=sort(quantile, decreasing=T))) + geom_line() + facet_grid(slice~exon_limit, scale="free_y") + scale_y_continuous(breaks=NULL) + ylab("Relative coverage") + geom_vline(mapping=aes(xintercept=c(250,500)), lty=2,lwd=0.5) + scale_x_continuous(breaks=c(125, 375, 625), labels = c("Upstream","CDS", "Downstream")) + xlab("") + scale_color_manual(values=colorRampPalette(c("#132B43","#56B1F7"))(5), name = "Length\nQuintile") + theme_bw()
+   :statement: aes(x=bin, y=area, col=factor(quantile, levels=sort(quantile, decreasing=T))) + geom_line() + facet_grid(slice~exon_limit, scale="free_y") + scale_y_continuous(breaks=NULL) + ylab("Relative coverage") + geom_vline(xintercept=c(250,500), lty=2,lwd=0.5) + scale_x_continuous(breaks=c(125, 375, 625), labels = c("Upstream","CDS", "Downstream")) + xlab("") + scale_color_manual(values=colorRampPalette(c("#132B43","#56B1F7"))(5), name = "Length\nQuintile") + theme_bw()
 
    Metagene profiles for Alyref in transcripts binned by length. 
 
@@ -52,7 +52,7 @@ The pattern is even more interesting for Chtop. Here we can see a 3' bias for th
    :render: r-ggplot
    :groupby: track
    :tracks: Chtop-FLAG
-   :statement: aes(x=bin, y=area, col=slice) + geom_line() + facet_grid(quantile~exon_limit, scale="free_y") + scale_y_continuous(breaks=NULL) + ylab("Relative coverage") + geom_vline(mapping=aes(xintercept=c(250,500)), lty=2,lwd=0.5) + scale_x_continuous(breaks=c(125, 375, 625), labels = c("Upstream","CDS", "Downstream")) + xlab("") + scale_color_manual(values=colorRampPalette(c("#132B43","#56B1F7"))(5), name = "Replicate") + theme_bw()
+   :statement: aes(x=bin, y=area, col=slice) + geom_line() + facet_grid(quantile~exon_limit, scale="free_y") + scale_y_continuous(breaks=NULL) + ylab("Relative coverage") + geom_vline(xintercept=c(250,500), lty=2,lwd=0.5) + scale_x_continuous(breaks=c(125, 375, 625), labels = c("Upstream","CDS", "Downstream")) + xlab("") + scale_color_manual(values=colorRampPalette(c("#132B43","#56B1F7"))(5), name = "Replicate") + theme_bw()
 
    Metagene profiles for Alyref in transcripts binned by length. 
 

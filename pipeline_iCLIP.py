@@ -152,6 +152,7 @@ import CGAT.Database as Database
 import CGATPipelines.PipelineMapping as PipelineMapping
 import CGATPipelines.PipelineMotifs as PipelineMotifs
 import CGATPipelines.PipelineRnaseq as PipelineRnaseq
+import CGATPipelines.PipelinePreprocess as PipelinePreprocess
 import PipelineiCLIP
 ###################################################
 ###################################################
@@ -180,14 +181,6 @@ PipelineiCLIP.PARAMS_ANNOTATIONS = PARAMS_ANNOTATIONS
 ###################################################################
 import CGATPipelines.PipelineTracks as PipelineTracks
 
-# define some tracks if needed
-TRACKS = PipelineTracks.Tracks(PipelineTracks.Sample3)
-for line in IOTools.openFile("sample_table.tsv"):
-    track = line.split("\t")[2]
-    TRACKS.tracks.append(PipelineTracks.Sample3(filename=track))
-
-
-
 ###################################################################
 ###################################################################
 ###################################################################
@@ -214,6 +207,21 @@ def connect():
 ###################################################################
 ## worker tasks
 ###################################################################
+@active_if(PARAMS["reads_paired"] == "flash")
+@collate("*.fastq.?.gz", regex("(.+).fastq.(.).gz"),
+         r"\1.fastq.gz")
+def flashPairs(infiles, outfile):
+    '''merge pairs using flash'''
+
+    processor = PipelinePreprocess.Flash(PARAMS["flash_options"],
+                                         PARAMS["flash_threads"])
+
+    job_threads = PARAMS["flash_threads"]
+    track = P.snip(outfile, ".fastq.gz")
+    statement = processor.build(infiles, [outfile], track)
+    P.run()
+    
+
 @transform("*.fastq.gz", regex("(.+).fastq.gz"),
            add_inputs(os.path.join(PARAMS["bowtie_index_dir"],
                                    PARAMS["phix_genome"]+".fa")),
@@ -242,6 +250,7 @@ def filterPhiX(infiles, outfile):
     P.run()
 
 
+@active_if(os.path.exists("sample_table.tsv"))
 @transform("sample_table.tsv", suffix(".tsv"), ".load")
 def loadSampleInfo(infile, outfile):
 
@@ -256,7 +265,7 @@ def extractUMI(infile, outfile):
     name to allow later deconvolving of PCR duplicates '''
 
     statement=''' zcat %(infile)s
-                | python %(project_src)s/UMI-tools/extract_umi.py
+                | umi_tools extract
                         --bc-pattern=%(reads_bc_pattern)s
                         -L %(outfile)s.log
                 | gzip > %(outfile)s '''
@@ -327,7 +336,7 @@ def demux_fastq(infiles, outfiles):
         line = line.split("\t")
         bc, name, lanes = line[1:]
         name = name.strip()
-        if PARAMS["reads_paired"]:
+        if PARAMS["reads_paired"] == 1:
             ext = "fastq.1.gz"
         else:
             ext = "fastq.gz"
@@ -382,8 +391,22 @@ def reconsilePairs(infiles, outfiles):
 
 
 ###################################################################
+@follows(mkdir("demux_fq"))
+@transform("*.remote", formatter(),
+           "demux_fq/{basename[0]}.fastq.gz")
+def get_remote_reads(infile, outfile):
+    '''Get remote reads for reprocessing'''
+
+    m = PipelineiCLIP.SemiProcessedCollector()
+    statement = m.build((infile,), outfile)
+    P.run()
+
+
+###################################################################
 @follows(mkdir("fastqc"))
-@transform(demux_fastq, regex(".+/(.+).fastq(.*)\.gz"),
+@transform([demux_fastq,
+            get_remote_reads],
+           regex(".+/(.+).fastq(.*)\.gz"),
            r"fastqc/\1\2.fastqc")
 def qcDemuxedReads(infile, outfile):
     ''' Run fastqc on the post demuxing and trimmed reads'''
@@ -395,7 +418,8 @@ def qcDemuxedReads(infile, outfile):
 
 
 ###################################################################
-@transform(qcDemuxedReads, regex("(.+)/(.+)\.fastqc"),
+@transform([qcDemuxedReads, get_remote_reads],
+           regex("(.+)/(.+)\.fastqc"),
            inputs(r"\1/\2_fastqc/fastqc_data.txt"),
            r"\1/\2_length_distribution.tsv")
 def getLengthDistribution(infile, outfile):
@@ -445,7 +469,7 @@ def mapping_files():
 
 
 ###################################################################
-@follows(mkdir("mapping.dir"), demux_fastq)
+@follows(mkdir("mapping.dir"), demux_fastq, get_remote_reads)
 @files(mapping_files)
 def run_mapping(infiles, outfiles):
     ''' run the mapping target of the mapping pipeline '''
@@ -463,9 +487,9 @@ def run_mapping(infiles, outfiles):
 
 ###################################################################
 @follows(run_mapping)
-@collate("mapping.dir/*.dir/*-*-*_*.bam",
-         regex("(.+)/([^_]+\-.+\-[^_]+)_(.+)\.([^.]+)\.bam"),
-         r"\1/merged_\2.\4.bam")
+@collate("mapping.dir/*.dir/*-*-*.bam",
+         regex("(.+)/([^_]+\-.+\-[^_]+).*\.([^.]+)\.bam"),
+         r"\1/merged_\2.\3.bam")
 def mergeBAMFiles(infiles, outfile):
     '''Merge reads from the same library, run on different lanes '''
 
@@ -622,7 +646,7 @@ def dedup_alignments(infile, outfile):
     outfile = P.snip(outfile, ".bam")
 
     job_memory="7G"
-    statement = ''' python %(project_src)s/UMI-tools/dedup_umi.py
+    statement = ''' umi_tools dedup
                     %(dedup_options)s
                     --output-stats=%(outfile)s
                     -I %(infile)s
@@ -631,7 +655,7 @@ def dedup_alignments(infile, outfile):
  
                     checkpoint;
 
-                    samtools sort %(outfile)s.tmp.bam %(outfile)s;
+                    samtools sort %(outfile)s.tmp.bam -o %(outfile)s.bam;
                    
                     checkpoint;
 
@@ -907,7 +931,7 @@ def calculateReproducibility(infiles, outfile):
     job_options = "-l mem_free=1G"
     infiles = " ".join(infiles)
 
-    statement = '''python %(project_src)s/calculateiCLIPReproducibility.py
+    statement = '''python %(project_src)s/iCLIPlib/scripts/calculateiCLIPReproducibility.py
                    %(infiles)s
                    -L %(outfile)s.log
                  | gzip > %(outfile)s '''
@@ -924,7 +948,7 @@ def reproducibilityAll(infiles, outfile):
     job_options = "-l mem_free=10G"
     infiles = " ".join(infiles)
 
-    statement = '''python %(project_src)s/calculateiCLIPReproducibility.py
+    statement = '''python %(project_src)s/iCLIPlib/scripts/calculateiCLIPReproducibility.py
                    %(infiles)s
                    -L %(outfile)s.log
                  | gzip > %(outfile)s '''
@@ -949,7 +973,7 @@ def reproducibilityVsControl(infiles, outfile):
 
         infiles = " ".join(infiles)
 
-        statement = '''python %(project_src)s/calculateiCLIPReproducibility.py
+        statement = '''python %(project_src)s/iCLIPlib/scripts/calculateiCLIPReproducibility.py
                    %(infiles)s
                    -L %(outfile)s.log
                    -t %(track)s
@@ -1000,7 +1024,7 @@ def computeDistances(infiles, outfile):
 
     job_options="-l mem_free=2G"
 
-    statement = '''python %(project_src)s/calculateiCLIPReproducibility.py
+    statement = '''python %(project_src)s/iCLIPlib/scripts/calculateiCLIPReproducibility.py
                    %(infiles)s
                    -L %(outfile)s.log
                    -t %(track)s
@@ -1079,8 +1103,37 @@ def loadCounts(infile, outfile):
 ###################################################################
 # Analysis
 ###################################################################
+@collate(dedup_alignments,
+         regex("(.+\-.+)\-(.+).bam"),
+         r"\1.union.bam")
+def makeUnionBams(infiles, outfile):
+    '''Merge replicates together'''
+
+    outfile = os.path.abspath(outfile)
+
+    if len(infiles) == 1:
+        infile = os.path.abspath(infiles[0])
+        statement = '''ln -sf %(infile)s %(outfile)s;
+                       checkout;
+ 
+                       ln -sf %(infile)s.bai %(outfile)s.bai;'''
+    else:
+
+        statement = ''' samtools merge -f %(outfile)s %(infiles)s;
+                        checkpoint;
+
+                        samtools index %(outfile)s'''
+
+    infiles = " ".join(infiles)
+
+    P.run()
+
+
+###################################################################
 @follows(mkdir("gene_profiles.dir"))
-@transform(dedup_alignments, regex(".+/(.+).bam"),
+@transform([dedup_alignments,
+            makeUnionBams],
+           regex(".+/(.+).bam"),
            add_inputs(os.path.join(PARAMS["annotations_dir"],
                                    PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
            r"gene_profiles.dir/\1.tsv")
@@ -1110,7 +1163,7 @@ def loadGeneProfiles(infiles, outfile):
                for infile in infiles]
 
     P.concatenateAndLoad(infiles, outfile,
-                          regex_filename='.+/(.+)\-(.+)\-(.+).tsv.geneprofilewithintrons.matrix.tsv.gz',
+                          regex_filename='.+/(.+)\-(.+)[\-\.](.+).tsv.geneprofilewithintrons.matrix.tsv.gz',
                           cat = "factor,condition,rep",
                           options = "-i factor -i condition -i rep")
 
@@ -1213,7 +1266,7 @@ def loadExonProfiles(infiles, outfile):
 @product(dedup_alignments,
          formatter(".+/(?P<TRACK>.+).bam"),
          [transcripts2Exons, transcripts2Introns],
-         formatter(".+/refcoding.(?P<INTERVALTYPE>.+).gtf.gz"),
+         formatter(".+/geneset_all.(?P<INTERVALTYPE>.+).gtf.gz"),
          "gene_profiles.dir/{TRACK[0][0]}.{INTERVALTYPE[1][0]}.tssprofile.log")
 def calculateExonTSSProfiles(infiles, outfile):
 
@@ -1246,6 +1299,60 @@ def calculateExonTSSProfiles(infiles, outfile):
 def profiles():
     pass
 
+
+###################################################################
+# iCLIP Pro
+###################################################################
+@follows(mkdir("iclippro.dir"), getFragLengths)
+@transform([dedup_alignments, makeUnionBams],
+           formatter(),
+           r"iclippro.dir/{basename[0]}_report_iCLIPro.txt")
+def run_iclip_pro(infile, outfile):
+    '''Run iCLIP Pro tool to detect if reverse transcription is 
+    efficiently terminating at crosslink'''
+
+    track = P.snip(os.path.basename(infile), ".bam")
+    infile = os.path.abspath(infile)
+
+    if "union" in track:
+        where = "LIKE '%s%%'" % P.snip(track, ".union")
+    else:
+        where = "= '%s'" % track
+
+    lengths = Database.fetch_DataFrame('''SELECT Length, sum(Count)
+                                       FROM deduped_frag_lengths
+                                       WHERE track %s
+                                       GROUP BY Length ''' % where,
+                                       connect())
+
+    longest = float(lengths["Length"].max())
+    shortest = float(lengths["Length"].min())
+    breaks = [shortest + x*(40-shortest)/10 for x in range(11)]
+    breaks = map(int, breaks)
+    len_groups = ["G%s:%i-%i" % (i+1, breaks[i+1], breaks[i+2]-1)
+                  for i in range(9)] + ["Longest:40-%i" % longest]
+    comparisons = ["G%s-Longest" % (i+1) for i in range(9)]
+
+    len_groups = ",".join(len_groups)
+    comparisons = ",".join(comparisons)
+
+    tmp = P.getTempFilename()
+    tmp_bn = os.path.basename(tmp)
+
+    statement = '''  python %(project_src)s/move_umi.py -I %(infile)s -S %(tmp)s.bam -L /dev/null;
+                     checkpoint;
+                     samtools index %(tmp)s.bam;
+                     checkpoint;
+                     iCLIPro
+                      -o iclippro.dir
+                      -g "%(len_groups)s"
+                      -p "%(comparisons)s"
+                      -f 180
+                     %(tmp)s.bam > iclippro.dir/%(track)s.log;
+                      checkpoint;
+                      rename iclippro.dir_%(tmp_bn)s %(track)s iclippro.dir/*;
+                      checkpoint; rm %(tmp)s.bam '''
+    P.run()
 
 ###################################################################
 # Calling significant clusters
@@ -1496,30 +1603,6 @@ def motifs():
 ###################################################################
 # Data Export
 ###################################################################
-@collate(dedup_alignments,
-         regex("(.+\-.+)\-(.+).bam"),
-         r"\1.union.bam")
-def makeUnionBams(infiles, outfile):
-    '''Merge replicates together'''
-
-    outfile = os.path.abspath(outfile)
-
-    if len(infiles) == 1:
-        infile = os.path.abspath(infiles[0])
-        statement = '''ln -sf %(infile)s %(outfile)s;
-                       checkout;
- 
-                       ln -sf %(infile)s.bai %(outfile)s.bai;'''
-    else:
-
-        statement = ''' samtools merge -f %(outfile)s %(infiles)s;
-                        checkpoint;
-
-                        samtools index %(outfile)s'''
-
-    infiles = " ".join(infiles)
-
-    P.run()
 
 @follows(mkdir("bigWig"))
 @subdivide([dedup_alignments,
@@ -1530,10 +1613,16 @@ def makeUnionBams(infiles, outfile):
 def generateBigWigs(infile, outfiles):
     '''Generate plus and minus strand bigWigs from BAM files '''
 
+    if PARAMS["reads_use_centre"]==1:
+        use_centre = "--use-centre"
+    else:
+        use_centre = ""
+
     out_pattern = P.snip(outfiles[0], "_plus.bw")
-    statement = '''python %(project_src)s/iCLIP2bigWig.py
+    statement = '''python %(project_src)s/iCLIPlib/scripts/iCLIP2bigWig.py
                           -I %(infile)s
                           -L %(out_pattern)s.log
+                          %(use_centre)s
                           %(out_pattern)s '''
 
     P.run()
@@ -1558,6 +1647,7 @@ def linkBigWig(infile, outfile):
 def generateBigWigUCSCFile(infiles, outfile):
     '''Generate track configuration for exporting wig files '''
 
+    projectname = PARAMS["projectname"]
 
     track_template = '''
           track tagwig_%(track)s_%(strand)s
@@ -1570,7 +1660,7 @@ def generateBigWigUCSCFile(infiles, outfile):
 
     overlap_template = '''
        track tagwig_%(track)s
-       parent clipwig
+       parent %(projectname)s_clipwig
        shortLabel %(short_label)s
        longLabel %(long_label)s
        autoScale on
@@ -1606,12 +1696,12 @@ def generateBigWigUCSCFile(infiles, outfile):
         stanzas[track] += "\n" + track_template % locals()
 
     composite_stanaz = '''
-    track clipwig
-    shortLabel iCLIP tags
-    longLabel Raw iCLIP tags
+    track %(projectname)s_clipwig
+    shortLabel %(projectname)s tags
+    longLabel %(projectname)s iCLIP tags
     superTrack on
     alwaysZero on
-    maxHeightPixels 16:16:32'''
+    maxHeightPixels 16:16:32''' % PARAMS
 
     output = "\n".join([composite_stanaz] + list(stanzas.values()))
 
@@ -1634,7 +1724,8 @@ def exportClusters(infile, outfile):
 @merge(exportClusters, "export/hg19/clusters_trackDb.txt")
 def generateClustersUCSC(infiles, outfile):
 
-    PipelineiCLIP.makeClustersUCSC(infiles, outfile, "pipelineClusters",
+    PipelineiCLIP.makeClustersUCSC(infiles, outfile,
+                                   "%s_pipelineClusters" % PARAMS["projectname"],
                                    "Clusters from iCLIP pipeline")
 
 
@@ -1685,7 +1776,7 @@ def export():
 ## primary targets
 ###################################################################
 @follows(PrepareReads, mapping, MappingStats, reproducibility,
-         profiles, clusters, motifs, export)
+         profiles, clusters, export)
 def full():
     pass
 

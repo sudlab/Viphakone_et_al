@@ -247,3 +247,104 @@ class ExpressionVsClipped(ProjectTracker, SQLStatementTracker):
                   WHERE "RNA counts" >= 1
                   '''
     fields = ("clipped",)
+
+class SingleVsMultiExon(ProjectTracker):
+
+    table = "track_counts"
+    col_pattern = ".+_FLAG"
+    slices = ["Nuclear", "Total"]
+    slice2col = {"Nuclear": "(Nuclear_RiboZ_R1_star + Nuclear_RiboZ_R2_star +0.0)/2",
+                 "Total": "(HEK293_banks_2_star + HEK293_banks_3_star + HEK293_banks_6_star +0.0)/3"}
+
+    def getTracks(self):
+
+        tracks = self.getColumns(self.table)
+        tracks = [track for track in tracks
+                  if re.match(self.col_pattern, track)]
+        return tracks
+
+    def __call__(self, track, slice):
+
+        expression_col = self.slice2col[slice]
+        factor, replicate = re.match("(.+)_.+_(.+)", track).groups()
+        statement=''' SELECT DISTINCT Geneid as gene_id,
+                             %(expression_col)s as expression,
+                             %(track)s as clip,
+                             '%(factor)s' as protein,
+                             '%(replicate)s' as replicate,
+                             MAX(nval) > 1 as multi_exon,
+                             CASE WHEN Ensembl_Gene_ID IS NULL THEN 0 ELSE 2 END as histone
+                      FROM %(table)s as counts
+                        INNER JOIN annotations.transcript_info as ti
+                           ON counts.Geneid = ti.gene_id
+                        INNER JOIN annotations.exon_stats as es 
+                           ON es.transcript_id = ti.transcript_id
+                        LEFT JOIN histone_genes as hg
+                           ON hg.Ensembl_Gene_ID = counts.Geneid
+                     GROUP BY gene_id '''
+        result =  self.getDataFrame(statement)
+        
+        result["category"] = result["multi_exon"] + result["histone"]
+        result = result[result["category"] != 3]
+        result = result[result["replicate"] != "union"]
+        result["category"] = result["category"].replace({0: "Single exon",
+                                                         1: "Multiexon",
+                                                         2: "Histone"})
+        mean_result = result.groupby(["protein", "replicate", "category"]).mean()
+        mean_result["ratio"] = mean_result["clip"]/mean_result["expression"]
+
+        mean_result_ratio =  mean_result.groupby(level=["protein","replicate"]).apply(lambda x: x/x.iloc[1]).reset_index()
+        
+
+        return mean_result_ratio
+
+
+class SingleVsMultiExonFlipInNorm(ProjectTracker):
+
+    table = "track_counts"
+    col_pattern = ".+_FLAG"
+   
+    def getTracks(self):
+
+        tracks = self.getColumns(self.table)
+        tracks = [track for track in tracks
+                  if re.match(self.col_pattern, track)]
+        return tracks
+
+    def __call__(self, track):
+
+        factor, replicate = re.match("(.+)_.+_(.+)", track).groups()
+        statement=''' SELECT DISTINCT Geneid as gene_id,
+                             %(track)s as clip,
+                             '%(factor)s' as protein,
+                             '%(replicate)s' as replicate,
+                             MAX(nval) > 1 as multi_exon,
+                             CASE WHEN Ensembl_Gene_ID IS NULL THEN 0 ELSE 2 END as histone
+                      FROM %(table)s as counts
+                        INNER JOIN annotations.transcript_info as ti
+                           ON counts.Geneid = ti.gene_id
+                        INNER JOIN annotations.exon_stats as es 
+                           ON es.transcript_id = ti.transcript_id
+                        LEFT JOIN histone_genes as hg
+                           ON hg.Ensembl_Gene_ID = counts.Geneid
+                     GROUP BY gene_id '''
+        result = self.getDataFrame(statement)
+        
+        result["category"] = result["multi_exon"] + result["histone"]
+        result = result[result["category"] != 3]
+        result = result[result["replicate"] != "union"]
+        result["category"] = result["category"].replace({0: "Single exon",
+                                                         1: "Multiexon",
+                                                         2: "Histone"})
+        mean_result = result.groupby(
+            ["protein", "replicate", "category"]).mean()
+
+        mean_result_norm = mean_result.groupby(
+            level=["category", "replicate"]).apply(
+                lambda x: x/x.iloc[2]).reset_index()
+
+        mean_result_ratio = mean_result_norm.groupby(
+            level=["protein", "replicate"]).apply(
+                lambda x: x/x.iloc[1]).reset_index()
+            
+        return mean_result_ratio

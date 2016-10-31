@@ -17,6 +17,9 @@ Contents:
    analysis/rnaseq_normalization.rst
    analysis/trnas.rst
    analysis/RetainedIntrons.rst
+   analysis/processing_index.rst
+   analysis/heatmaps.rst
+   analysis/TagCountsSingleVsMulti.rst
 
    analysis/Figures.rst
    

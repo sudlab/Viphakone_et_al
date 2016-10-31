@@ -20,6 +20,20 @@ transcriptome mapping
    :render: r-ggplot
    :groupby: all
    :slices: union
-   :statement: aes(x=position, y=density) + stat_summary(fun.y="mean", geom = "line") + facet_wrap(~track, scale="free_y") + theme_bw() + geom_vline(xinterscept=c(0,-24), lty=2, lwd=0.5)
+   :statement: aes(x=position, y=density) + stat_summary(fun.y="mean", geom = "line") + facet_wrap(~track, scale="free_y") + theme_bw() + geom_vline(xintercept=c(0,-24), lty=2, lwd=0.5)
 
    As above but mapped to transcriptome.
+
+
+First exons
+------------------
+
+
+.. report:: GeneProfiles.FirstExonBoundaryProfiles2
+   :render: r-ggplot
+   :regex: heatmaps/(.+).first_exon.end.matrix.tsv.gz
+   :glob: heatmaps/*.first_exon.end.matrix.tsv.gz
+   :groupby: all
+   :statement: aes(index,density,col=track) + geom_line() + facet_wrap(~track)
+
+   Meta genes at boundaries of first exons.

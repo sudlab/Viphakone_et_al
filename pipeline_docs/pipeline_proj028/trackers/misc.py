@@ -71,6 +71,80 @@ class GeneProfiles3(ProjectTracker):
         df.bin = numpy.arange(1,df.shape[0]+1)
         return df
 
+class EclipProfiles(ProjectTracker):
+
+    def getSlices(self):
+        return self.getValues("SELECT DISTINCT cell_type FROM encode_eclip_metagenes")
+        
+    def getTracks(self):
+        return self.getValues("SELECT DISTINCT factor FROM encode_eclip_metagenes") + ["Chtop"]
+
+    def __call__(self, track, slice):
+
+        if track == "Chtop" and slice == "HEK293":
+            statement = ''' SELECT bin, area, "iCLIP" as condition
+                            FROM gene_profiles
+                            WHERE rep='union' AND factor='%(track)s' 
+                            '''
+        elif track=="Chtop":
+            return None
+
+        else:
+            statement = ''' SELECT bin, area, condition
+                            FROM encode_eclip_metagenes
+                            WHERE factor='%(track)s' AND cell_type="%(slice)s" 
+                            '''
+
+        df = self.getDataFrame(statement)
+        df["area"] = pandas.rolling_mean(df["area"], window=5)
+        df["bin"] = df.groupby("condition")["bin"].transform(lambda x: numpy.arange(1,len(x)+1))
+        
+        return df
+
+class NormedEclipProfiles(ProjectTracker):
+
+    def getSlices(self):
+        return self.getValues("SELECT DISTINCT cell_type FROM encode_eclip_metagenes")
+        
+    def getTracks(self):
+        return self.getValues("SELECT DISTINCT factor FROM encode_eclip_metagenes") + ["Chtop"]
+
+    def __call__(self, track, slice):
+
+        print "called"
+        if track == "Chtop" and slice == "HEK293":
+            statement = ''' SELECT bin, area, "iCLIP" as condition
+                            FROM gene_profiles
+                            WHERE rep='union' AND factor='%(track)s' 
+                            '''
+        elif track=="Chtop":
+            return None
+
+        else:
+            statement = ''' SELECT bin, area, condition
+                            FROM encode_eclip_metagenes
+                            WHERE factor='%(track)s' AND cell_type="%(slice)s" 
+                            '''
+
+        df = self.getDataFrame(statement)
+        
+        
+        if "Control" in list(df.condition.values):
+            pdf = df.pivot(index="bin", values ="area", columns="condition")
+            print df.columns
+            pdf["area"] = pdf.eCLIP / pdf.Control
+            
+            df = pdf.reset_index()
+            df["condition"] = "eCLIP"
+            df.area = df.area/df.area.sum()
+
+        df["area"] = pandas.rolling_mean(df["area"], window=5)
+        df["bin"] = df.groupby("condition")["bin"].transform(lambda x: numpy.arange(1,len(x)+1))
+
+        return df
+
+
+
 class GeneFractions(ProjectTracker):
 
     def getTracks(self):
@@ -78,8 +152,11 @@ class GeneFractions(ProjectTracker):
                     for x in self.getColumns("track_counts")
                     if re.match(".+_FLAG_[Ru]",x)])
 
-    slices = ["R1","R2","R3","R4", "union"]
-
+    def getSlices(self):
+        return set([re.match(".+_FLAG.([Ru].+)", x).groups()[0]
+                    for x in self.getColumns("track_counts")
+                    if re.match(".+_FLAG.[Ru]", x)])
+ 
     def __call__(self, track, slice):
 
         statement = '''SELECT DISTINCT counts.Geneid, 
@@ -102,11 +179,12 @@ statement_template = ''' SELECT DISTINCT counts.Geneid
                                   %s_FLAG_%%(slice)s > 1 '''
  
 
-class ClippedFractionOverlaps(ProjectTracker,TrackerMultipleLists):
+class ClippedFractionOverlaps(ProjectTracker, TrackerMultipleLists):
 
-    slices = ["R1","R2","R3","R4", "union"]
-
-
+    def getSlices(self):
+        return set([re.match(".+_FLAG.([Ru].+)", x).groups()[0]
+                    for x in self.getColumns("track_counts")
+                    if re.match(".+_FLAG.[Ru]", x)])
         
     ListA = statement_template % "Alyref"
     ListB = statement_template % "Chtop"

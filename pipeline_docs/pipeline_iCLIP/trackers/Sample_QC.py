@@ -83,7 +83,7 @@ class ContextRepresentation(ContextStats):
                                  AS percent_bases
                       FROM %(slice)s_context_stats cstats
                        INNER JOIN
-                            reference_context_interval_stats as ints
+                            geneset_all_context_interval_stats as ints
                           ON ints.track = cstats.category
                       WHERE cstats.track = '%(track)s'
                          AND cstats.category IN ('%(categories)s')  
@@ -293,12 +293,12 @@ class PercentMapped(ProjectTracker):
 
         mapper = PARAMS["mappers"]
         statement = '''SELECT samples.track as sample,
-                              (vm.reads_mapped +0.0)/vm.reads_total as mapped
+                              (SUM(vm.reads_mapped) +0.0)/SUM(vm.reads_total) as mapped
                        FROM
                         sample_table as samples
                        INNER JOIN
                          mapping.view_mapping as vm
-                       ON vm.track = "%(track)s_" || samples.track || '.%(mapper)s'
+                       ON vm.track LIKE samples.track || '%%.%(mapper)s'
                        GROUP BY Sample '''
         return self.getAll(statement)
 
@@ -311,13 +311,14 @@ class PercentDeDuped(ProjectTracker):
         mapper=PARAMS["mappers"]
 
         statement = '''SELECT dd.track as sample,
-                       (dd.counts + 0.0)/vm.reads_mapped as p_unique
+                       (dd.counts + 0.0)/SUM(vm.reads_mapped) as p_unique
                        FROM
                         deduped_bam_stats as dd
                        INNER JOIN
                         mapping.view_mapping as vm
-                       ON vm.track = '%(track)s_' || dd.track || '.%(mapper)s'
-                       WHERE dd.category = 'reads_mapped' '''
+                       ON vm.track LIKE dd.track || '%%.%(mapper)s'
+                       WHERE dd.category = 'reads_mapped'
+                       GROUP BY dd.track '''
 
         return self.getAll(statement)
 

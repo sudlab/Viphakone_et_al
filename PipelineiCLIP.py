@@ -10,13 +10,41 @@ import os
 import re
 import pysam
 
+from CGATPipelines.PipelineMapping import SequenceCollectionProcessor
+
 # The PARAMS dictionary must be provided by the importing
 # code
 
 PARAMS = {}
 
 
-def checkParams():
+class SemiProcessedCollector(SequenceCollectionProcessor):
+    '''This class takes local or remote, single ended files that have been
+    semi-processed, i.e. they have been filtered, trimmed and
+    demuxed. The UMI may not be in the expected place, but can be
+    moved using pre-processed patterns in the [preprocessed] section
+    of the ini
+
+    '''
+
+    def build(self, infiles, outfile):
+
+        cmd_preprocess, mapfiles = self.preprocess(infiles, outfile)
+        
+        statement = [cmd_preprocess]
+        assert len(mapfiles)==1
+        infile = mapfiles[0][0]
+        statement.append('''
+                zcat %(infile)s |
+                sed 's/ /_/g' |
+                sed -E 's/%%(preprocess_in_pattern)s/%%(preprocess_out_pattern)s/g;n;n;n' |
+                gzip > %(outfile)s;
+           ''' % locals())
+
+        return " checkpoint; ".join(statement)
+
+
+def checkParams(): 
 
     if not len(PARAMS) > 0:
         raise ValueError(
@@ -94,7 +122,7 @@ def callClusters(bamfile, gtffile, outfiles,
                           --method=sort --sort-order=gene+transcript
                  | python %(scriptsdir)s/gtf2gtf.py -L %(logfile)s.log 
                           --method=set-transcript-to-gene
-                 | python %(project_src)s/find_significant_bases.py
+                 | python %(project_src)s/iCLIPlib/scripts/find_significant_bases.py
                    %(bamfile)s
                    %(options)s
                    --output-both=%(bed12)s
