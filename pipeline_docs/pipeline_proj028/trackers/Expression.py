@@ -317,6 +317,7 @@ class SingleVsMultiExonFlipInNorm(ProjectTracker):
         statement=''' SELECT DISTINCT Geneid as gene_id,
                              %(track)s as clip,
                              '%(factor)s' as protein,
+                             FlipIn_FLAG_%(replicate)s as FlipIn,
                              '%(replicate)s' as replicate,
                              MAX(nval) > 1 as multi_exon,
                              CASE WHEN Ensembl_Gene_ID IS NULL THEN 0 ELSE 2 END as histone
@@ -336,15 +337,8 @@ class SingleVsMultiExonFlipInNorm(ProjectTracker):
         result["category"] = result["category"].replace({0: "Single exon",
                                                          1: "Multiexon",
                                                          2: "Histone"})
-        mean_result = result.groupby(
-            ["protein", "replicate", "category"]).mean()
+        mean_result = result.groupby("category").mean()
 
-        mean_result_norm = mean_result.groupby(
-            level=["category", "replicate"]).apply(
-                lambda x: x/x.iloc[2]).reset_index()
-
-        mean_result_ratio = mean_result_norm.groupby(
-            level=["protein", "replicate"]).apply(
-                lambda x: x/x.iloc[1]).reset_index()
+        mean_result_ratio = mean_result["clip"]/mean_result["FlipIn"]
             
         return mean_result_ratio

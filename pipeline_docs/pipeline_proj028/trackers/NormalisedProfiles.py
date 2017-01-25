@@ -131,13 +131,13 @@ class FirstLastExonCount(ProjectTracker):
 
     def getTracks(self):
 
-        return self.getValues(
-            "SELECT DISTINCT cell FROM first_last_exon_counts")
+        return list(self.getValues(
+            "SELECT DISTINCT cell FROM first_last_exon_counts"))
 
     def getSlices(self):
 
-        return self.getValues(
-            "SELECT DISTINCT replicate FROM first_last_exon_counts")
+        return list(self.getValues(
+            "SELECT DISTINCT replicate FROM first_last_exon_counts"))
 
     def __call__(self, track, slice):
 
@@ -148,25 +148,36 @@ class FirstLastExonCount(ProjectTracker):
 
         data = self.getDataFrame(statement)
         if data.shape[0] == 0:
-            return pd.DataFrame()
+            return pd.DataFrame({"protein":[], "exon":[], "normed_count": []})
         data.set_index("protein", inplace=True)
         row_sums = data.sum(axis=1)
-        data = data.loc[row_sums > 0]
+        gene_normed = data.loc[row_sums > 0]
         
-        row_sums = data.sum(axis=1)
+        row_sums = gene_normed.sum(axis=1)
         print data.shape
         print row_sums.shape
 
-        data = data.div(row_sums, axis=0)
+        gene_normed = gene_normed.div(row_sums, axis=0)
 
-        summed_data = data.groupby(level="protein").sum()
+        summed_data = gene_normed.groupby(level="protein").mean()
 
         normed = summed_data/summed_data.loc["FlipIn"]
         normed = normed.drop("FlipIn")
-#        normed = normed.div(normed["middle_exon"], axis=0)
+
 
         melted = pd.melt(normed.reset_index(), id_vars="protein",
                          var_name="exon", value_name="normed_count")
+
+        summed_data = data.groupby(level="protein").mean()
+
+        normed = summed_data/summed_data.loc["FlipIn"]
+        normed = normed.drop("FlipIn")
+
+        melted2 = pd.melt(normed.reset_index(), id_vars="protein",
+                          var_name="exon", value_name="unnormed_count")
+
+        melted = pd.merge(melted, melted2, how='inner', on=['protein','exon'])
+
         return melted
 
 

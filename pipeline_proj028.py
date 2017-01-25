@@ -1649,9 +1649,42 @@ def get_first_last_exon_counts(infiles, outfile):
 
     bamfile, gtffile = infiles
     PipelineProj028.get_first_last_counts(bamfile,
-                                        gtffile,
-                                        outfile,
-                                        submit=True)
+                                          gtffile,
+                                          outfile,
+                                          submit=True)
+
+
+@follows(mkdir("firstlastexon.dir"))
+@transform([os.path.join(PARAMS["ejc_iclip_dir"], "deduped.dir/*.bam"),
+            os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam")],
+           formatter(),
+           add_inputs(getSingleExonGeneModels),
+           "firstlastexon.dir/{basename[0]}_single_exons.tsv.gz")
+def get_single_exon_counts(infiles, outfile):
+    '''Count number of clips in single exon genes using count_clip_sites.
+    In theory this is redundant with the featureCounts based counting above
+    but this is just more convenient'''
+
+    bamfile, gtffile = infiles
+    use_centre = "GFP" in bamfile
+
+    statement = '''python %(project_src)s/iCLIPlib/scripts/count_clip_sites.py
+                          -I %(gtffile)s
+                          %(use_centre)s
+                          %(bamfile)s
+                          -L %(outfile)s.log
+                          -S %(outfile)s '''
+
+    P.run()
+
+
+@merge(get_single_exon_counts, "firstlastexon.dir/single_exon_counts.load")
+def load_single_exon_counts(infiles, outfile):
+    
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename="firstlastexon.dir/(.+)-(.+).(union|R.)",
+                         cat = "protein,cell,replicate",
+                         options="-i protein -i gene_id -i cell -i replicate")
 
 
 @merge(get_first_last_exon_counts,
@@ -1998,6 +2031,33 @@ def jointIndexOnChunks(infiles, outfile):
 def transcript_chunks():
     pass
 
+##################################################################
+# DEXseq on chunks
+#################################################################
+###################################################################
+@transform("*.ri_design.tsv",
+           regex("(.+).ri_design.tsv"),
+           add_inputs(countChunks,
+                      getTranscriptChunks),
+           r"transcript_chunks.dir/\1.dexseq.tsv")
+def runDEXSeqOnChunks(infiles, outfile):
+    ''' Run DEXSeq using the stubbs RNAseq and the transcript
+    modeles with retained introns '''
+
+    design, counts, models = infiles
+
+    infiles = ",".join([models, counts, design])
+    outfile = P.snip(outfile, ".tsv")
+
+    job_threads = 6
+    job_memory="10G"
+
+    statement = ''' Rscript %(project_src)s/run_dexseq.R 
+                            --infiles %(infiles)s
+                            --outfiles %(outfile)s.tsv,%(outfile)s.gtf.gz,%(outfile)s.RData
+                    &> %(outfile)s.log '''
+
+    P.run()
 
 ###################################################################
 @follows(mkdir("exon_intron_ratio.dir"))
@@ -3976,18 +4036,18 @@ def liftOverFuRNASeq(infile, outfile):
 @transform([liftOverFuRNASeq,
             liftOverhnRNPUReads],
            regex(".+/(.+)\.bed.gz"),
-           r"export/hg19/Hela_\1.bigWig")
+           r"export/hg19/\1.bigWig")
 def FuRNAToBigWig(infile, outfile):
 
     PipelineProj028.bamToBigWig(infile, outfile)
 
 ###################################################################
 @collate(FuRNAToBigWig, 
-         regex(".+/HeLa_(.+)_(.+)/bigWig"),
+         regex(".+/HeLa_(.+)_(.+)\.bigWig"),
          r"export/hg19/Fu_\1_trackDb.txt")
 def generateFuTrackDb(infiles, outfile):
 
-    if "iCLIP" in infile[0]:
+    if "iCLIP" in infiles[0]:
         type = "iCLIP"
     else:
         type = "RNASeq"
@@ -3996,7 +4056,7 @@ def generateFuTrackDb(infiles, outfile):
 
     PipelineProj028.bigWigTrackDB(infiles,
                                   long_label_template,
-                                  "Fu et al %s" % type,
+                                  "Fu_et_al_%s" % type,
                                   "%s data from Fu et al" % type,
                                   outfile)
 

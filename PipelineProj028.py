@@ -1343,7 +1343,12 @@ def liftOverFromHg18(infile, outfile):
 
     import CGATPipelines.Pipeline as P 
 
-    statement = '''liftOver <( zcat %(infile)s | grep -P "^chr" )
+    if infile.endswith(".gz"):
+        cat_cmd = "zcat"
+    else:
+        cat_cmd = "cat"
+
+    statement = '''liftOver <( %(cat_cmd)s %(infile)s | grep -P "^chr" )
                             /ifs/mirror/ucsc/hg18/liftOver/hg18ToHg19.over.chain.gz
                             %(outfile)s
                             %(outfile)s.unmapped'''
@@ -1373,14 +1378,20 @@ def bamToBigWig(infile, outfile):
 
     genome_file = os.path.join(PARAMS['annotations_dir'],"contigs.tsv")
 
+    if not infile.endswith(".bam"):
+        infile = "-i <( zcat %(infile)s | sort -k1,1 -k2,2n)" % locals()
+    else:
+        infile = "-ibam %(infile)s" % locals()
+
     tmp = P.getTempFilename()
-    statement = ''' genomeCoverageBed -split -bg -ibam %(infile)s 
-                                      -g %(genome_file)s > %(tmp)s 2> %(outfile)s.log;
+    statement = ''' genomeCoverageBed -split -bg %(infile)s
+                                      -g %(genome_file)s  2> %(outfile)s.log
+                   | sort -k1,1 -k2,2n > %(tmp)s ;
                     
                     checkpoint;
 
-                    bedGraphToBigWig %(tmp)s 
-                                     %(genome_file)s 
+                    bedGraphToBigWig %(tmp)s
+                                     %(genome_file)s
                                      %(outfile)s 2>>%(outfile)s.log;
 
                     checkpoint;
@@ -1694,11 +1705,19 @@ def get_first_last_counts(bamfile, gtffile, outfile):
         if not gene[0].source == "protein_coding":
             continue
 
-        if len(exons) <= 2:
-            continue
-
         contig = gene[0].contig
         strand = gene[0].strand
+
+        if len(exons) <= 2:
+            if len(exons) == 1:
+                single_exon = iCLIP.count_intervals(getter,
+                                                    exons,
+                                                    contig=contig,
+                                                    strand=strand).sum()
+                outlines.append(map(str,
+                                    [gene[0].gene_id,
+                                     "NA", "NA", "NA", "NA", single_exon]))
+            continue
 
         first = iCLIP.count_intervals(getter,
                                       [exons[0]],
@@ -1720,11 +1739,11 @@ def get_first_last_counts(bamfile, gtffile, outfile):
                                         contig=contig,
                                         strand=strand).sum()
         outlines.append(map(str,
-                            [gene[0].gene_id, first, middle, last, introns]))
+                            [gene[0].gene_id, first, middle, last, introns, "NA"]))
 
     IOTools.writeLines(
         outfile, outlines,
         header=["gene_id", "first_exon",
-                "middle_exon", "last_exon", "introns"])
+                "middle_exon", "last_exon", "introns", "single_exon"])
 
 

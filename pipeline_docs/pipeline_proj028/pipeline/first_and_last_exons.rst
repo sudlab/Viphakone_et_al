@@ -103,12 +103,40 @@ Aggregated, normalised counts
 ------------------------------
 
 
-These counts are summed across all genes and then normalised by the counts for FlipIn across all genes. They are then normalised to the counts for the middle exon. 
+These counts are within gene normalised to the gene sum, then summed across all genes and then normalised by the counts for FlipIn across all genes. Note that effectively here we are looking at the *fraction* of reads that map to each section. 
 
 .. report:: NormalisedProfiles.FirstLastExonCount
    :render: r-ggplot
    :slices: r(R.)
-   :layout: row
-   :statement: aes(x=exon, y=log2(normed_count), col=slice) + geom_point() + facet_wrap(~protein) + theme_bw() + scale_x_discrete(limits=c("first_exon", "middle_exon", "last_exon"), labels=c("First", "CDS", "Last")) + theme(aspect.ratio=1) + ylab("LogFC compared to middle exons")
+   :tracks: FLAG
+   :statement: aes(x=exon, y=log2(normed_count), col=slice, group=slice) + geom_point() +  geom_line() + facet_wrap(~protein, scale="free_y") + theme_bw() + scale_x_discrete(limits=c("first_exon", "middle_exon", "last_exon", "introns"), labels=c("First", "CDS", "Last", "intron")) + theme(aspect.ratio=1) + ylab("LogFC compared to FlipIn")
+
+   Within gene Normalised counts across first, last and middle exons.
+
+.. report:: NormalisedProfiles.FirstLastExonCount
+   :render: r-ggplot
+   :slices: r(R.)
+   :tracks: GFP
+   :statement: aes(x=exon, y=log2(normed_count), col=slice, group=slice) + geom_point() + geom_line() + facet_wrap(~protein, scale="free_y") + theme_bw() + scale_x_discrete(limits=c("first_exon", "middle_exon", "last_exon", "introns"), labels=c("First", "CDS", "Last", "intron")) + theme(aspect.ratio=1) + ylab("LogFC compared to FlipIn")
+
+   Within gene normalised counts across first, last and middle exons.
+
+
+
+The following are the same, but not per-gene normalised. Here we are looking at the numbers rather than the fraction, but will be overly influcanced by highly expressed genges.
+
+.. report:: NormalisedProfiles.FirstLastExonCount
+   :render: r-ggplot
+   :slices: r(R.)
+   :tracks: FLAG
+   :statement: aes(x=exon, y=log2(unnormed_count), col=slice, group=slice) + geom_point() +  geom_line() + facet_wrap(~protein, scale="free_y") + theme_bw() + scale_x_discrete(limits=c("first_exon", "middle_exon", "last_exon", "introns"), labels=c("First", "CDS", "Last", "intron")) + theme(aspect.ratio=1) + ylab("LogFC compared to FlipIn")
+
+   Normalised counts across first, last and middle exons.
+
+.. report:: NormalisedProfiles.FirstLastExonCount
+   :render: r-ggplot
+   :slices: r(R.)
+   :tracks: GFP
+   :statement: aes(x=exon, y=log2(unnormed_count), col=slice, group=slice) + geom_point() + geom_line() + facet_wrap(~protein, scale="free_y") + theme_bw() + scale_x_discrete(limits=c("first_exon", "middle_exon", "last_exon", "introns"), labels=c("First", "CDS", "Last", "intron")) + theme(aspect.ratio=1) + ylab("LogFC compared to FlipIn")
 
    Normalised counts across first, last and middle exons.

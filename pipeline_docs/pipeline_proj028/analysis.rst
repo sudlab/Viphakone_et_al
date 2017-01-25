@@ -20,6 +20,7 @@ Contents:
    analysis/processing_index.rst
    analysis/heatmaps.rst
    analysis/TagCountsSingleVsMulti.rst
+   analysis/first_last_exon.rst
 
    analysis/Figures.rst
    
