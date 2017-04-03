@@ -3062,7 +3062,8 @@ def loadUTRPentamers(infiles, outfile):
 
 
 ###################################################################
-@follows(loadUTRPentamers)
+@follows(loadUTRPentamers,
+         load_single_exon_kmers)
 def pentamers():
     pass
 
@@ -3944,6 +3945,89 @@ def load_processing_index(infiles, outfile):
 @follows(load_processing_index)
 def processing_index():
     pass
+
+###################################################################
+# Chimeric Reads
+###################################################################
+@follows(mkdir("chimeric_reads.dir"))
+@transform(os.path.join(PARAMS["iclip_dir"],
+                        "mapping.dir/star.dir/merged*.bam"),
+           regex(".+/merged_(.+).star.bam"),
+           r"chimeric_reads.dir/\1.unmapped.fastq.gz")
+def get_unmapped_fastq(infile, outfile):
+    '''Filter out the unmapped reads from the iCLIP pipeline and output
+    them to pairs of fastq files ready for mapping'''
+
+    # read unmapped is flag 4
+   
+    statement = ''' samtools view -hf4 %(infile)s 
+                  | samtools fastq -
+                  | gzip > %(outfile)s '''
+
+    P.run()
+
+
+###################################################################
+@transform(get_unmapped_fastq,
+           formatter(),
+           "chimeric_reads.dir/{basename[0]}.bam")
+def map_unmapped_reads(infile, outfile):
+    ''' Take the reads that STAR failed to map and map them with BWA'''
+
+    from CGATPipelines import PipelineMapping
+    bwa_threads = 4
+    bwa_index_dir="/ifs/mirror/genomes/bwa"
+    bwa_mem_options = "-M"
+
+    m = PipelineMapping.BWAMEM(remove_non_unique="1",
+                               strip_sequence=None,
+                               set_nh=None)
+    statement = m.build((infile,),outfile)
+    P.run()
+
+
+###################################################################
+@transform(map_unmapped_reads,
+           regex("(.+).unmapped.fastq.bam"),
+           r"\1.deduped.bam")
+def dedup_remapped_reads(infile, outfile):
+    '''Do UMI based deduplication of the reads that BWA mapped but
+    STAR doesn't'''
+
+    tmpfile = P.getTempFilename()
+
+    statement = '''umi_tools dedup -I %(infile)s -S %(tmpfile)s.bam -L %(outfile)s.log;
+                   checkpoint;
+                   samtools view -bq 20 %(tmpfile)s.bam
+                 | samtools sort -o %(outfile)s;
+                   checkpoint;
+                   rm %(tmpfile)s.bam;
+                   checkpoint;
+                   samtools index %(outfile)s'''
+
+    P.run()
+
+
+###################################################################
+@collate(dedup_remapped_reads,
+         regex("(.+)-R(.).deduped.bam"),
+         r"\t-union.deduped.bam")
+def merge_remapped_replicates(infiles,  outfile):
+    '''Create union tracks for the remapped bam files'''
+
+    infiles = " ".join(infiles)
+
+    statement = '''samtools merge %(infiles)s %(outfile)s;
+                   checkpoint;
+                   samtools index %(outfile)s'''
+
+    P.run()
+
+
+@follows(dedup_remapped_reads)
+def chimeric_reads():
+    pass
+
 
 
 ###################################################################
