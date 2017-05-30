@@ -96,7 +96,7 @@ def main(argv=None):
     parser.add_option("-j", "--junctions-file", dest="junctions", type="string",
                       help="Tabix index bed file with junctions to add on"
                       "top of provided GTF file")
-    parser.add_option("-m", "--mismatches", dest="mismatches", type="int",
+    parser.add_option("-m", "--mismatches", dest="mismatches", type="float",
                       default=2,
                       help="Number of mismatches to allow when aligning read"
                       "sections")
@@ -119,9 +119,9 @@ def main(argv=None):
     (options, args) = E.Start(parser, argv=argv)
 
     bamfile = pysam.AlignmentFile(args[0])
-    fasta = IndexedFasta.IndexedFasta(IOTools.openFile(options.fasta))
-    fasta.setConverter(IndexedFasta.getConverter("zero-both-open"))
-    junctions = pysam.TabixFile(options.junctions)
+    fasta = IndexedFasta.IndexedFasta(options.fastafile)
+#    fasta.setConverter(IndexedFasta.getConverter("zero-both-open"))
+    junctions = pysam.TabixFile(options.junctions, parser=pysam.asBed())
 
     stats = collections.Counter()
     inner_dist_dist = collections.Counter()
@@ -130,9 +130,11 @@ def main(argv=None):
 
     if options.out_prefix:
         out_bam_name = options.out_prefix + ".bam"
+    elif not options.stdout == sys.stdout:
+        options.stdout.close()
+        out_bam_name = options.stdout.name
     else:
-        out_bam = "-"
-
+        out_bam_name = "-"
     out_bam = pysam.AlignmentFile(out_bam_name, "wb", template=bamfile)
 
     if not options.out_prefix:
@@ -152,6 +154,13 @@ def main(argv=None):
         contig = transcripts[0][0].contig
         strand = transcripts[0][0].strand
 
+        gene_exon = GTF.Entry().fromGTF(transcripts[0][0])
+        gene_exon.start = start
+        gene_exon.end = end
+        gene_exon.transcript_id = "gene"
+
+        transcripts.append([gene_exon])
+
         reads = list(bamfile.fetch(contig, start, end))
         if len(reads) == 0:
             continue
@@ -159,15 +168,16 @@ def main(argv=None):
         converters = [TranscriptCoordInterconverter(transcript)
                       for transcript in transcripts]
 
-        gene_sequence = fasta.getSequence(contig, strand, start, end)
-        transcript_sequences = [GTF.toSequence(transcript, fasta)
+        transcript_sequences = [GTF.toSequence(transcript, fasta).upper()
                                 for transcript in transcripts]
         transcript_junctions = junctions.fetch(contig, start, end, strand)
         junction_starts = [j.start for j in transcript_junctions]
         junction_ends = [j.end for j in transcript_junctions]
-        transcript_sequences.append(gene_sequence)
 
         for read in reads:
+
+            if sum(stats.itervalues()) % 1000 == 0:
+                E.debug("Analysed %i reads" % sum(stats.itervalues()))
 
             # Basic read filters ###
             if not read.is_reverse == (strand == "-"):
@@ -179,7 +189,8 @@ def main(argv=None):
                 stats["not in gene"] += 1
                 continue
 
-            if not read.is_secondary or read.is_supplementary():
+            if read.is_secondary or read.is_supplementary:
+                stats["not primary"] += 1
                 continue
 
             # Find any unaligned sequence in the read ###
@@ -189,6 +200,11 @@ def main(argv=None):
             if unaligned_start is None:
                 stats["no softclipped"] += 1
                 continue
+            
+            if not float(options.mismatches).is_integer():
+                mm_thresh = options.mismatches * len(unaligned_seq)
+            else:
+                mm_thresh = options.mismatches
 
             if (read.reference_end in junction_starts and
                  unaligned_start != 0) or \
@@ -203,7 +219,7 @@ def main(argv=None):
                                      converters, start, end, strand)
 
             # Do the alignments and format results ###
-            alignments = [simple_align(s, unaligned_seq)
+            alignments = [simple_align(s, unaligned_seq.upper())
                           for s in filtered_sequences]
 
             # add coordinates
@@ -212,7 +228,7 @@ def main(argv=None):
             # Filter the alignments ###
             min_mm = min(a[0][0] for a in alignments)
 
-            if min_mm > options.mismatches:
+            if min_mm > mm_thresh:
                 # no good alignments
                 stats["No good alignment"] += 1
                 continue
@@ -233,7 +249,7 @@ def main(argv=None):
 
             # Find index of alignment with minimum inner distance
             best_inner_dist, best_alignment_index = \
-                select_alignement(f_alignments)
+                select_alignement(f_alignments, options.min_dist)
 
             if best_inner_dist < options.min_dist:
                 stats["probable indel"] += 1
@@ -242,6 +258,7 @@ def main(argv=None):
             stats["good"] += 1
 
             # use alignment with the smallest inner distance as THE alignment
+            
             aligned_converter = filtered_converters[best_alignment_index]
             alignment = alignments[best_alignment_index]
             f_alignment = f_alignments[best_alignment_index]
@@ -255,6 +272,7 @@ def main(argv=None):
                 f_alignment[0][0]
 
             new_read = build_read(alignment,
+                                  len(unaligned_seq),
                                   aligned_converter,
                                   unaligned_start,
                                   best_inner_dist,
@@ -271,14 +289,17 @@ def main(argv=None):
     xl_dist_fn = options.out_prefix + ".crosslink_distance_distribution.tsv.gz"
     gene_counts_fn = options.out_prefix + ".gene_counts.tsv.gz"
 
-    IOTools.writeLines(inner_dist_fn, inner_dist_dist.iteritems(),
+    IOTools.writeLines(inner_dist_fn, sorted(inner_dist_dist.iteritems()),
                        ["Distance", "Count"])
-    IOTools.writeLines(xl_dist_fn, xl_dist_dist.iteritems(),
+    IOTools.writeLines(xl_dist_fn, sorted(xl_dist_dist.iteritems()),
                        ["Distance", "Count"])
-    IOTools.writeLines(gene_counts_fn, gene_counts.iteritems(),
+    IOTools.writeLines(gene_counts_fn, sorted(gene_counts.iteritems()),
                        ["gene_id", "Count"])
 
-    E.Info("\n".join(sorted("\t".join(stats.iteritems()))))
+    stat_lines = [map(str, line) for line in stats.iteritems()]
+    stat_lines = sorted(stat_lines)
+    stat_lines = ["\t".join(line) for line in stat_lines]
+    E.info("\n".join(stat_lines))
 
     # write footer and output benchmark information.
     E.Stop()
@@ -344,15 +365,7 @@ def get_read_transcripts(read, transcript_sequences, converters,
     aligned_seq_pos = [convert_alignment(read, converter)
                        for converter in converters]
 
-    gene_pos = (read.reference_start - start,
-                read.reference_end - start)
-
-    gene_length = end - start
-    if strand == "-":
-        gene_pos = (gene_length - gene_pos[1] + 1,
-                    gene_length - gene_pos[0] + 1)
-
-    aligned_seq_pos.append(gene_pos)
+    assert aligned_seq_pos[-1] is not None
 
     filtered_sequences = [t for t, c
                           in zip(transcript_sequences, aligned_seq_pos)
@@ -370,31 +383,36 @@ def build_read(alignment, length, converter, unaligned_start,
     '''Build a new read to represent the new supplimentary alignment.'''
 
     new_read = pysam.AlignedSegment()
-    new_read.name = old_read.name
-    new_read.sequence = old_read.sequence
+    new_read.query_name = old_read.query_name
+    new_read.seq = old_read.seq
     new_read.query_qualities = old_read.query_qualities
     new_read.flag = old_read.flag
     new_read.is_supplementary = True
     new_read.reference_id = old_read.reference_id
+
+    if old_read.is_reverse:
+        new_read.reference_start = \
+                    converter.transcript2genome(alignment[0][1]) - length + 1
+    else:
+        new_read.reference_start = converter.transcript2genome(alignment[0][1])
     
-    new_read.reference_start = converter.transcript2genome(alignment[1][0])
-    
-    cigar = tuple()
+    cigar = list()
     if unaligned_start > 0:
         cigar.append((4, unaligned_start))
 
     cigar.append((0, length))
 
-    if length + unaligned_start < old_read.template_length:
-        cigar.append(4, old_read.template_length - (length + unaligned_start))
+    if (length + unaligned_start) < old_read.query_length:
+        cigar.append((4, old_read.query_length - (length + unaligned_start)))
 
+    cigar = tuple(cigar)
     new_read.cigartuples = cigar
     
     new_read.template_length = old_read.template_length
 
-    new_read.tags = (("XL", xl_dist),
-                     ("XI", inner_dist),
-                     ("NM", alignment[0]))
+    new_read.tags = (("XL", int(xl_dist)),
+                     ("XI", int(inner_dist)),
+                     ("NM", int(alignment[0][0])))
 
     return new_read
 

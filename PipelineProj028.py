@@ -779,20 +779,24 @@ def findNuclearLocalisation(infile, outfile):
     counts = R('read.delim("%(infile)s",sep="\t", row.names=1)' % locals())
 
     counts = R["as.matrix"](counts)
-    col_data = R.strsplit(R.colnames(counts), "_")
+    print R.colnames(counts)
+    col_data = R.strsplit(R.colnames(counts), ".", fixed=True)
     col_data = R["do.call"](R.rbind, col_data)
     col_data = R["data.frame"](col_data)
     col_data.rownames = R.colnames(counts)
-    col_data.names = c("knockdown", "fraction", "replicate")
+    col_data.names = c("fraction", "purificiation", "replicate")
 
     print col_data
-    keep = col_data.rx((col_data.rx2("fraction").ro != "Total").ro
-                       & (col_data.rx2("knockdown").ro == "Control"),
-                       True)
+    #keep = col_data.rx((col_data.rx2("fraction").ro != "Total").ro
+    #                   & (col_data.rx2("knockdown").ro == "Control"),
+    #                   True)
 
-    print keep
+    #print keep
 
-    kept_counts = counts.rx(True, R.rownames(keep))
+    #kept_counts = counts.rx(True, R.rownames(keep))
+    keep = col_data
+    kept_counts = counts
+    
     print R.relevel(keep.rx2("fraction"), "Cytoplasmic")
     keep.rx[True,"fraction"] = R.relevel(keep.rx2("fraction"), "Cytoplasmic")
    
@@ -1719,6 +1723,9 @@ def get_first_last_counts(bamfile, gtffile, outfile):
                                      "NA", "NA", "NA", "NA", single_exon]))
             continue
 
+        if gene[0].strand == "-":
+            exons = exons[::-1]
+            
         first = iCLIP.count_intervals(getter,
                                       [exons[0]],
                                       contig=contig,
@@ -1746,4 +1753,24 @@ def get_first_last_counts(bamfile, gtffile, outfile):
         header=["gene_id", "first_exon",
                 "middle_exon", "last_exon", "introns", "single_exon"])
 
+def get_last_pc_exons(infile, outfile):
+    '''For every transcript that is part of a protein coding gene, this
+    function will write the last exon to outfile'''
 
+    outfile = IOTools.openFile(outfile, "w")
+    
+    for transcript in GTF.transcript_iterator(GTF.iterator(IOTools.openFile(infile))):
+
+        if not transcript[0].gene_biotype == "protein_coding":
+            continue
+
+        transcript = [e for e in transcript if e.feature =="exon"]
+        if len(transcript) == 1:
+            continue
+        
+        if transcript[0].strand == "+":
+            outfile.write(str(transcript[-1]) + "\n")
+        elif transcript[0].strand == "-":
+            outfile.write(str(transcript[0]) + "\n")
+
+    outfile.close()

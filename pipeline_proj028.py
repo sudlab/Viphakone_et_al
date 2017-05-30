@@ -1888,7 +1888,8 @@ def getTranscriptChunks(infile, outfile):
 @transform([os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),
             "*.bam",
             os.path.join(PARAMS["dir_external"],
-                        "stubbsRNAseq/*.bam")],
+                         "stubbsRNAseq/*.bam"),
+            os.path.join(PARAMS["dir_ejc_iclip"], "deduped.dir/*.bam")],
            regex("(?:.+/)?([-\w]+(?:\.union|\.reproducible)?).+"),
            add_inputs(getTranscriptChunks),
            r"transcript_chunks.dir/\1.chunk_counts.tsv.gz")
@@ -1986,7 +1987,37 @@ def annotateDetainedChunks(infiles, outfile):
 
     P.run()
 
+    
+###################################################################
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           regex(".+/(.+).gtf.gz"),
+           r"transcript_chunks.dir/\1.pc_last_exons.gtf.gz")
+def get_last_pc_exons(infile, outfile):
 
+    PipelineProj028.get_last_pc_exons(infile, outfile)
+
+
+###################################################################
+@transform(getTranscriptChunks,
+           suffix(".gtf.gz"),
+           add_inputs(get_last_pc_exons),
+           ".last_pc_exons.load")
+def annotateLastExons(infiles, outfile):
+
+    chunks, exons = infiles
+
+    statement = '''bedtools intersect -a %(chunks)s -b %(exons)s -c
+                  | sed -E 's/.+gene_id \\"(ENSG[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
+                  | sed '1i gene_id\\texon_id\\tlast'
+                  | %(load_smt)s > %(outfile)s'''
+
+    tablename = P.toTable(outfile)
+    load_smt = P.build_load_statement(tablename=tablename,
+                                      options="-i gene_id -i exon_id")
+    P.run()
+
+    
 ###################################################################
 @merge(countChunks, "transcript_chunks.dir/chunk_counts.load")
 def loadChunkCounts(infiles, outfile):
@@ -2009,8 +2040,9 @@ def loadChunkCounts(infiles, outfile):
     P.run()
 
 
+###################################################################
 @merge([loadChunkCounts, annotateExonsChunks, annotateIntronChunks,
-        annotateDetainedChunks],
+        annotateDetainedChunks, annotateLastExons],
        "transcript_chunks.dir/chunk_indexes.load")
 def jointIndexOnChunks(infiles, outfile):
 
@@ -3595,12 +3627,59 @@ def loadhnRNPUConext(infiles, outfile):
                          regex_filename=".+(rep[0-9])\.",
                          options="-i category")
 
+    
+###################################################################
+@follows(mkdir("fractions.dir"))
+@transform("*RiboZ*bam",
+           suffix(".bam"),
+           add_inputs(os.path.join(
+               PARAMS["annotations_dir"],
+               PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           r"fractions.dir/\1.feature_counts.tsv.gz")
+def countNuclearCytoRNAseq(infiles, outfile):
+
+    bamfile, annotations = infiles
+    PipelineRnaseq.runFeatureCounts(
+        annotations,
+        bamfile,
+        outfile,
+        job_threads=PARAMS['featurecounts_threads'],
+        strand=0,
+        options=PARAMS['featurecounts_options'] + ' -O -M')
+
+    
+###################################################################
+@merge(countNuclearCytoRNAseq,
+       "fractions.dir/nuclear_cyto_counts.tsv.gz")
+def mergeNuclearCounts(infiles, outfile):
+    '''Merge feature counts data into one table'''
+
+    infiles = " ".join(infiles)
+
+    statement=''' python %(scriptsdir)s/combine_tables.py
+                         -c 1
+                         -k 7
+                         --regex-filename='(.+).feature_counts.tsv.gz'
+                         --use-file-prefix
+                         %(infiles)s
+                         -L %(outfile)s.log
+               | gzip > %(outfile)s '''
+
+    P.run()
+
+
+@transform(mergeNuclearCounts,
+           suffix(".tsv.gz"),
+           ".load")
+def loadNuclearCytoCounts(infile, outfile):
+
+    P.load(infile, outfile, "-i geneid")
 
 
 ###################################################################
-@transform(mergeStubbsCounts,
+@transform(mergeNuclearCounts,
            regex(".+"),
-           "stubbsRNAseq.dir/fraction_diff.deseq.tsv")
+           "fractions.dir/fraction_diff.deseq.tsv")
 def getNuclearLocalisation(infile, outfile):
     '''Use DESeq to compute a relative measure of nucelar localistation
     as the ratio of nuclear to cytoplasmic normalised counts from
@@ -3950,8 +4029,10 @@ def processing_index():
 # Chimeric Reads
 ###################################################################
 @follows(mkdir("chimeric_reads.dir"))
-@transform(os.path.join(PARAMS["iclip_dir"],
+@transform([os.path.join(PARAMS["iclip_dir"],
                         "mapping.dir/star.dir/merged*.bam"),
+            os.path.join(PARAMS["ejc_iclip_dir"],
+                         "mapping.dir/star.dir/merged*.bam")],
            regex(".+/merged_(.+).star.bam"),
            r"chimeric_reads.dir/\1.unmapped.fastq.gz")
 def get_unmapped_fastq(infile, outfile):
@@ -3976,7 +4057,7 @@ def map_unmapped_reads(infile, outfile):
 
     from CGATPipelines import PipelineMapping
     bwa_threads = 4
-    bwa_index_dir="/ifs/mirror/genomes/bwa"
+    bwa_index_dir="/ifs/mirror/genomes/bwa-0.7.5a"
     bwa_mem_options = "-M"
 
     m = PipelineMapping.BWAMEM(remove_non_unique="1",
@@ -3987,8 +4068,27 @@ def map_unmapped_reads(infile, outfile):
 
 
 ###################################################################
-@transform(map_unmapped_reads,
-           regex("(.+).unmapped.fastq.bam"),
+@collate([map_unmapped_reads,
+          os.path.join(PARAMS["iclip_dir"],
+                       "mapping.dir/star.dir/merged_*-FLAG-R*bam"),
+         os.path.join(PARAMS["ejc_iclip_dir"],
+                       "mapping.dir/star.dir/merged_*-GFP-R*bam")],
+         regex(".+/(?:merged_)?(.+-FLAG-R.|.+-GFP-R.).+bam"),
+         r"chimeric_reads.dir/\1.merged.bam")
+def merge_mapped_and_remapped(infiles, outfile):
+
+    infiles = " ".join(infiles)
+
+    statement = '''samtools merge %(outfile)s %(infiles)s;
+                   checkpoint;
+                   samtools index %(outfile)s'''
+
+    P.run()
+
+    
+###################################################################
+@transform(merge_mapped_and_remapped,
+           regex("(.+).merged.bam"),
            r"\1.deduped.bam")
 def dedup_remapped_reads(infile, outfile):
     '''Do UMI based deduplication of the reads that BWA mapped but
@@ -4009,22 +4109,98 @@ def dedup_remapped_reads(infile, outfile):
 
 
 ###################################################################
-@collate(dedup_remapped_reads,
-         regex("(.+)-R(.).deduped.bam"),
-         r"\t-union.deduped.bam")
-def merge_remapped_replicates(infiles,  outfile):
-    '''Create union tracks for the remapped bam files'''
-
-    infiles = " ".join(infiles)
-
-    statement = '''samtools merge %(infiles)s %(outfile)s;
-                   checkpoint;
-                   samtools index %(outfile)s'''
+@transform(dedup_remapped_reads,
+           suffix(".deduped.bam"),
+           add_inputs(os.path.join(PARAMS["genome_dir"],
+                                   PARAMS["genome"] + ".fasta"),
+                      filterExpressedTranscripts,
+                      PARAMS["external_junctions_db"]),
+           ".chimeric.bam")
+def get_chimeric_reads(infiles, outfile):
+         
+    bam, fasta, gtf, junctions = infiles
+    tmp = P.getTempFilename()
+    out_prefix = P.snip(outfile, ".bam")
+    log = out_prefix + ".log"
+    statement = '''python %(project_src)s/find_chimeric_reads.py
+                      -g %(gtf)s
+                      -f %(fasta)s
+                      -j %(junctions)s
+                      -m 0.2
+                      --minimum-unaligned=5
+                      --out-prefix=%(out_prefix)s
+                      -L %(log)s
+                      %(bam)s;
+                checkpoint;
+                samtools sort %(outfile)s -o %(tmp)s.bam;
+                checkpoint;
+                mv %(tmp)s.bam %(outfile)s;
+                checkpoint;
+                samtools index %(outfile)s'''
 
     P.run()
 
 
-@follows(dedup_remapped_reads)
+###################################################################
+@collate(get_chimeric_reads,
+         regex("(.+-FLAG|.+-GFP).+"),
+         r"\1-union.chimeric.bam")
+def merge_chimeric_reads(infiles, outfile):
+
+    infiles = " ".join(infiles)
+    
+    statement = '''samtools merge - %(infiles)s
+                 | samtools sort - -o %(outfile)s;
+
+                 checkpoint;
+ 
+                 samtools index %(outfile)s '''
+
+    P.run()
+
+    
+###################################################################
+@collate(get_chimeric_reads,
+         regex("(.+).bam"),
+         inputs(r"\1.log"),
+         "chimeric_log.load")
+def load_chimeric_read_log(infiles, outfile):
+    '''Process and load the general log file for the chimeric reads'''
+
+    loglines = []
+
+    for infile in infiles:
+        track = P.snip(os.path.basename(infile), ".chimeric.log")
+        F=track.split("-")
+        protein = "-".join(F[:-1])
+        rep = F[-1]
+        
+        for line in IOTools.openFile(infile):
+            if line.startswith('#'):
+                continue
+            F = line.strip().split("\t")
+            loglines.append([protein, rep, F[0].split("INFO")[-1], F[1]])
+
+    tmpfn = P.getTempFilename(shared=True)
+    IOTools.writeLines(tmpfn, loglines, header=["protein", "replicate", "category",  "count"])
+
+    P.load(tmpfn, outfile)
+
+    os.unlink(tmpfn)
+
+    
+@follows(get_chimeric_reads)
+@collate("chimeric_reads.dir/*-*-R*.chimeric.*.tsv.gz",
+         regex("(.+).chimeric.(.+).tsv.gz"),
+         r"chimeric_reads.dir/chimeric_\2.load")
+def load_chimeric_stats(infiles, outfile):
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+-FLAG|.+-GFP)-(R.).chimeric",
+                         cat="protein,rep",
+                         options = "-i gene_id -i Distance -i protein -i rep")
+
+
+@follows(load_chimeric_read_log, load_chimeric_stats, merge_chimeric_reads)
 def chimeric_reads():
     pass
 
