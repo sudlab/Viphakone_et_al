@@ -21,7 +21,12 @@ Contents:
    analysis/heatmaps.rst
    analysis/TagCountsSingleVsMulti.rst
    analysis/first_last_exon.rst
-
+   analysis/ChTop_at_PolyA.rst
+   analysis/DetainedIntrons.rst
+   analysis/ExonBoundary4A3.rst
+   analysis/EJCPROMTHeatmaps.rst
+   analysis/EJC_Plots.rst
+   analysis/FirstMiddleLast.rst
    analysis/Figures.rst
    
   

@@ -323,7 +323,7 @@ def demux_fastq(infiles, outfiles):
     
     statement = '''reaper -geom 5p-bc
                           -meta %(meta)s
-                          -i <( zcat %(infile)s | sed 's/ /_/g')
+                          -i <( zcat %(infile)s)
                           --noqc
                           %(reads_reaper_options)s
                           -basename demux_fq/%(track)s_
@@ -381,7 +381,7 @@ def reconsilePairs(infiles, outfiles):
     track = P.snip(os.path.basename(infiles[0]), ".fastq.1.gz")
     infiles = " ".join(infiles)
     job_options = "-l mem_free=1G"
-    statement = '''python %(scripts_dir)s/fastqs2fastqs.py
+    statement = '''python %(scriptsdir)s/fastqs2fastqs.py
                           --method=reconcile
                           --id-pattern-1='(.+)_.+_[ATGC]+'
                           --output-filename-pattern=reconciled.dir/%(track)s.fastq.%%s.gz
@@ -555,7 +555,7 @@ def generateContextBed(infile, outfile):
                           PARAMS_ANNOTATIONS["interface_contigs"])
     statement = ''' zcat %(infile)s
                   | awk '$3=="exon"'
-                  | python %(scripts_dir)s/gtf2gtf.py
+                  | python %(scriptsdir)s/gtf2gtf.py
                     --method=exons2introns
                     
                      -L %(outfile)s.log
@@ -566,7 +566,7 @@ def generateContextBed(infile, outfile):
 
                   zcat %(infile)s %(outfile)s.tmp.gtf.gz
                   | awk '$3=="exon" || $3=="intron"'
-                  | python %(scripts_dir)s/gff2bed.py
+                  | python %(scriptsdir)s/gff2bed.py
                     --set-name=source
                      -L %(outfile)s.log
                   | sort -k1,1 -k2,2n
@@ -574,7 +574,7 @@ def generateContextBed(infile, outfile):
                     
                     checkpoint;
                     
-                    bedtools complement -i %(outfile)s.tmp.bed -g %(genome)s
+                    bedtools complement -i %(outfile)s.tmp.bed -g <( sort -k1,1 %(genome)s)
                   | awk 'BEGIN{OFS="\\t"} {print ($0 "\\tnone\\t0\\t.")}'
                     > %(outfile)s.tmp2.bed;
 
@@ -597,7 +597,7 @@ def generateContextBed(infile, outfile):
 def getContextIntervalStats(infile, outfile):
     ''' Generate length stastics on context file '''
 
-    statement = ''' python %(scripts_dir)s/bed2stats.py
+    statement = ''' python %(scriptsdir)s/bed2stats.py
                             --aggregate-by=name
                             -I %(infile)s
                     | gzip > %(outfile)s '''
@@ -622,7 +622,7 @@ def createViewMapping(infile, outfile):
 
     to_cluster = False
     statement = '''cd mapping.dir;
-                   nice python %(scripts_dir)s/../../CGATPipelines/CGATPipelines/pipeline_mapping.py
+                   nice python %(scriptsdir)s/../../CGATPipelines/CGATPipelines/pipeline_mapping.py
                    make createViewMapping -v5 -p1 '''
     P.run()
 
@@ -705,7 +705,7 @@ def loadFragLengths(infiles, outfile):
 def dedupedBamStats(infile, outfile):
     ''' Calculate statistics on the dedeupped bams '''
 
-    statement = '''python %(scripts_dir)s/bam2stats.py
+    statement = '''python %(scriptsdir)s/bam2stats.py
                          --force-output
                           < %(infile)s > %(outfile)s '''
 
@@ -812,7 +812,7 @@ def subsetBamStats(infile, outfile):
     ''' Stats on the subset BAMs '''
 
     job_options = "-l mem_free=500M"
-    statement = ''' python %(scripts_dir)s/bam2stats.py 
+    statement = ''' python %(scriptsdir)s/bam2stats.py 
                     --force-output < %(infile)s > %(outfile)s '''
     P.run()
 
@@ -835,7 +835,7 @@ def buildContextStats(infiles, outfile):
 
     infile, reffile = infiles
     infile = re.match("(.+.bam)(?:.bai)?", infile).groups()[0]
-    statement = ''' python %(scripts_dir)s/bam_vs_bed.py
+    statement = ''' python %(scriptsdir)s/bam_vs_bed.py
                    --min-overlap=0.5
                    --log=%(outfile)s.log
                    %(infile)s %(reffile)s
@@ -1142,7 +1142,7 @@ def calculateGeneProfiles(infiles, outfile):
     for each sample'''
 
     infile, reffile = infiles
-    statement = '''python %(scripts_dir)s/bam2geneprofile.py
+    statement = '''python %(scriptsdir)s/bam2geneprofile.py
                            --method=geneprofilewithintrons
                            --bam-file=%(infile)s
                            --gtf-file=%(reffile)s
@@ -1180,15 +1180,17 @@ def transcripts2Exons(infile, outfile):
     tmp_outfile = P.snip(outfile, ".gtf.gz") + ".tmp.gtf.gz"
     PipelineiCLIP.removeFirstAndLastExon(infile, tmp_outfile)
 
-    statement = '''python %(scripts_dir)s/gff2bed.py 
+    # note the faffing around with the bed because bedtools puts the strand in
+    # column 4
+    statement = '''python %(scriptsdir)s/gff2bed.py 
                           --is-gtf 
                            -I %(tmp_outfile)s 
                            -L %(outfile)s.log
                   | sort -k1,1 -k2,2n
-                  | mergeBed -i stdin -s -d 100 -c 4 -o distinct
+                  | mergeBed -i stdin -s -d 100
                   | awk '($3-$2) > 100 {print}'
-                  | awk 'BEGIN{OFS="\\t"} {$4=NR; print}'
-                  | python %(scripts_dir)s/bed2gff.py --as-gtf -L %(outfile)s.log
+                  | awk 'BEGIN{OFS="\\t"} {$6=$4; $4=NR; $5="0"; print $0;}'
+                  | python %(scriptsdir)s/bed2gff.py --as-gtf -L %(outfile)s.log
                   | gzip -c > %(outfile)s '''
     P.run()
 
@@ -1207,17 +1209,17 @@ def transcripts2Introns(infile, outfile):
     tmp_outfile = P.snip(outfile, ".gtf.gz") + ".tmp.gtf.gz"
     PipelineiCLIP.removeFirstAndLastExon(infile, tmp_outfile)
 
-    statement = '''python %(scripts_dir)s/gtf2gtf.py
+    statement = '''python %(scriptsdir)s/gtf2gtf.py
                            -I %(tmp_outfile)s
                           --log=%(outfile)s.log
                            --method=exons2introns
-                  | python %(scripts_dir)s/gff2bed.py
+                  | python %(scriptsdir)s/gff2bed.py
                           --is-gtf
                            -L %(outfile)s.log
                   | sort -k1,1 -k2,2n
-                  | mergeBed -i stdin -s -d 100 -c 4 -o distinct
-                  | awk 'BEGIN{OFS="\\t"} {$4=NR; print}'
-                  | python %(scripts_dir)s/bed2gff.py
+                  | mergeBed -i stdin -s -d 100 
+                  | awk 'BEGIN{OFS="\\t"} {$6=$4; $4=NR; $5="0"; print $0;}'
+                  | python %(scriptsdir)s/bed2gff.py
                           --as-gtf -L %(outfile)s.log
                   | gzip -c > %(outfile)s '''
     P.run()
@@ -1458,6 +1460,30 @@ def loadClusterContextStats(infiles, outfile):
                          "clusters.dir/(.+).context_stats.tsv.gz")
 
 
+###################################################################
+@follows(mkdir("clusters.dir"), mapping_qc)
+@transform(dedup_alignments,
+           regex(".+/(.+).bam"),
+           add_inputs(os.path.join(PARAMS["annotations_dir"],
+                                   PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           r"clusters.dir/\1.rand_clusters.bg.gz")
+def call_clusts_by_rand(infiles, outfile):
+
+    bamfile, gtffile = infiles
+    statement = '''python %(project_src)s/iCLIPlib/scripts/significant_bases_by_randomisation.py
+                   -I %(gtffile)s
+                   -b %(bamfile)s
+                   -s %(clusters_window_size)s
+                   -t %(clusters_fdr)s
+                   -S %(outfile)s
+                   -L %(outfile)s.log
+                   -p 6'''
+
+    job_memory="5G"
+    job_threads=6
+    P.run()
+    
+               
 ###################################################################
 @follows(callSignificantClusters,
          loadCrosslinkedBasesCount,
@@ -1794,7 +1820,7 @@ def build_report():
 
     E.info("Running mapping report build from scratch")
 #    statement = '''cd mapping.dir;
-#                   python %(scripts_dir)s/CGATPipelines/pipeline_mapping.py
+#                   python %(scriptsdir)s/CGATPipelines/pipeline_mapping.py
 #                   -v5 -p1 make build_report '''
 #    P.run()
     E.info("starting report build process from scratch")

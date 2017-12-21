@@ -27,6 +27,8 @@ Contents:
    pipeline/intron_exon_ratio.rst
    pipeline/heatmaps.rst
    pipeline/first_and_last_exons.rst
+   pipeline/paperclip_and_chtop.rst
+   pipeline/enrichments_over_control.rst
    pipeline/misc.rst
 
   

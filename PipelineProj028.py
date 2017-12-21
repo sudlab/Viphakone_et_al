@@ -15,11 +15,12 @@ import re
 import xml
 import os
 import itertools
+import random
 
 AMBIGUITY_CODES = {'M': 'AC',
                    'R': 'AG',
                    'W': 'AT',
-                   'S': 'CG',
+                  'S': 'CG',
                    'Y': 'CT',
                    'K': 'GT',
                    'V': 'ACG',
@@ -698,7 +699,7 @@ def calculateSplicingIndex(bamfile, gtffile, outfile):
                              counts["uncounted"]) + "\n")
 
 @cluster_runnable      
-def exonBoundaryProfiles(bamfile, gtffile, outfile):
+def exonBoundaryProfiles(bamfile, gtffile, outfile, center):
 
     bamfile = pysam.AlignmentFile(bamfile)
 
@@ -706,6 +707,8 @@ def exonBoundaryProfiles(bamfile, gtffile, outfile):
     nExamined = 0
     nEligable = 0
 
+    bamfile = iCLIP.make_getter(bamfile, centre=center)
+    
     E.info("Processing transcripts..")
     for transcript in GTF.transcript_iterator(
             GTF.iterator(IOTools.openFile(gtffile))):
@@ -943,7 +946,61 @@ def mergeExonsAndIntrons(exons, introns):
 
         yield entry
 
+        
+@cluster_runnable
+def getRetainedIntronsFromMatchedTranscripts(infile, outfile):
+    ''' Look for transcripts with retained introns and the
+    equivalent transcript without a retained intron. Just the
+    retained intron '''
 
+    outf = IOTools.openFile(outfile, "w")
+
+    for gene in GTF.gene_iterator(
+            GTF.iterator(IOTools.openFile(infile))):
+        
+        gene_out = []
+        introns_out = []
+
+        # now find if any of the transcripts are retained intron
+        # versions of any of the others
+        for first, second in itertools.product(gene, gene):
+            
+            first = sorted([entry for entry in first
+                            if entry.feature == "exon"],
+                           key=lambda x: x.start)
+            second = sorted([entry for entry in second
+                             if entry.feature == "exon"],
+                            key=lambda x: x.start)
+
+            first_introns = set(GTF.toIntronIntervals(first))
+            second_introns = set(GTF.toIntronIntervals(second))
+            
+            if len(first_introns-second_introns) > 0 and \
+               len(second_introns-first_introns) == 0:
+                novel_introns = list(first_introns-second_introns)
+
+                def _filterIntron(intron):
+                    return intron[0] > second[0].start and \
+                        intron[1] < second[-1].end
+
+                novel_introns = filter(_filterIntron, novel_introns)
+
+                if len(novel_introns) > 0:
+                    gene_out.extend(first)
+
+                for intron in novel_introns:
+                    introns_out.append(intron)
+
+        introns_out = Intervals.combine(introns_out)
+        template = gene[0][0]
+        template.feature = "exon"
+        for gff in introns_out:
+            entry = GTF.Entry().copy(template)
+            entry.start = gff[0]
+            entry.end = gff[1]
+            outf.write("%s\n" % str(entry))
+
+            
 def getTranscriptsPlusRetainedIntrons(infile, outfile):
     ''' Look for transcripts with retained introns and the
     equivalent transcript without a retained intron. Output
@@ -1764,13 +1821,556 @@ def get_last_pc_exons(infile, outfile):
         if not transcript[0].gene_biotype == "protein_coding":
             continue
 
-        transcript = [e for e in transcript if e.feature =="exon"]
-        if len(transcript) == 1:
+        strand = transcript[0].strand
+        exons = [e for e in transcript if e.feature == "exon"]
+
+        if len (exons) < 2:
             continue
         
-        if transcript[0].strand == "+":
-            outfile.write(str(transcript[-1]) + "\n")
-        elif transcript[0].strand == "-":
-            outfile.write(str(transcript[0]) + "\n")
-
+        exons = sorted(exons, key = lambda x: x.start,
+                       reverse = strand == "-")
+        
+        outfile.write(str(exons[-1]) + "\n")
+        
     outfile.close()
+
+
+def get_first_pc_exons(infile, outfile):
+    '''For every transcript that is part of a protein coding gene, this
+    function will write the last exon to outfile'''
+
+    
+    outfile = IOTools.openFile(outfile, "w")
+    
+    for transcript in GTF.transcript_iterator(GTF.iterator(IOTools.openFile(infile))):
+
+        if not transcript[0].gene_biotype == "protein_coding":
+            continue
+
+        strand = transcript[0].strand
+        exons = [e for e in transcript if e.feature == "exon"]
+
+        if len(exons) < 2:
+            continue
+        
+        exons = sorted(exons, key = lambda x: x.start,
+                       reverse = strand == "-")
+        
+        outfile.write(str(exons[0]) + "\n")
+        
+    outfile.close()
+
+    
+def fetch_transcript_window(pos, upstream, downstream, gene):
+
+    transcript_coords = iCLIP.TranscriptCoordInterconverter(gene)
+    polyA_coord = transcript_coords.genome2transcript((pos,))[0]
+
+    outlines = []
+
+    dist_from_end = transcript_coords.length - polyA_coord
+
+    fudge = 0
+    if dist_from_end < downstream:
+        fudge = downstream - dist_from_end
+        downstream = dist_from_end
+    
+    if transcript_coords.length - polyA_coord < downstream:
+        return outlines
+        
+    try:
+        fragment_coords = transcript_coords.transcript_interval2genome_intervals(
+            (polyA_coord-upstream, polyA_coord+downstream))
+    except IndexError:
+        E.debug("Too close to end for gene %s" % gene[0].gene_id)
+        return outlines
+
+    fragment_coords = [list(x) for x in fragment_coords]
+    
+    if gene[0].strand == "+":
+        fragment_coords[-1][1] += fudge
+    else:
+        fragment_coords[0][0] -= fudge
+
+    frag_len = sum([b-a for a, b in fragment_coords])
+
+    assert frag_len == 300, "frags are: %s, fudge is %i, pos is %s, strand is %s" % (fragment_coords, fudge, pos, gene[0].strand)
+    
+    for frag in fragment_coords:
+        entry = GTF.Entry().fromGTF(gene[0])
+        entry.feature = "exon"
+        entry.start = int(frag[0])
+        entry.end = int(frag[1])
+        outlines.append(str(entry) + "\n")
+
+    return outlines
+
+            
+def get_single_polyA_windows(gtffile, bedfile, outfile):
+    '''This function finds flattened genes that contain exactly 1
+    paperclip polyA signal and extracts 200bp upsream and 100bp
+    downstream (in transcript coordinates) from around it
+
+    '''
+    
+    indexed_polyA = Bed.readAndIndex(IOTools.openFile(bedfile),
+                                     with_values=True)
+    outlines = []
+    for gene in GTF.flat_gene_iterator(GTF.iterator
+                                       (IOTools.openFile(gtffile))):
+        exons = GTF.asRanges(gene, "exon")
+        hits = []
+        for exon in exons:
+            if gene[0].contig in indexed_polyA:
+                hits.extend(
+                    indexed_polyA[gene[0].contig].find(exon[0], exon[1]))
+
+        if len(hits) != 1:
+            continue
+
+        outlines.extend(fetch_transcript_window(
+            hits[0][2].start, 200, 100, gene))
+
+    with IOTools.openFile(outfile, "w") as outfh:
+        for line in outlines:
+            outfh.write(line)
+    
+
+def get_alternate_polyAs(gtffile, bedfile, outfile_5prime, outfile_3prime):
+    ''' The function finds flattened genes with exactly 2 paperclip polyA signals
+    where the 3' end is dominant over the 5' one and extracts 200bp upstream and
+    100bp downstream of them. '''
+
+    indexed_polyA = Bed.readAndIndex(IOTools.openFile(bedfile),
+                                     with_values=True)
+    outlines_5prime = []
+    outlines_3prime = []
+    
+    for gene in GTF.flat_gene_iterator(GTF.iterator
+                                       (IOTools.openFile(gtffile))):
+        exons = GTF.asRanges(gene, "exon")
+        hits = []
+        for exon in exons:
+            if gene[0].contig in indexed_polyA:
+                hits.extend(
+                    indexed_polyA[gene[0].contig].find(exon[0], exon[1]))
+
+        if len(hits) != 2:
+            continue
+
+        hits = [h[2] for h in hits]
+        
+        pA1 = min(hits, key=lambda x: x.start)
+        pA2 = max(hits, key=lambda x: x.start)
+
+        assert pA1.start <= pA2.start, "%s, %s" % (pA1.start, pA2.start)
+
+        hit_ratio = float(pA2.score)/(float(pA1.score) + float(pA2.score))
+        if gene[0].strand == "+":
+            if hit_ratio <= 0.66:
+                continue
+
+            outlines_5prime.extend(fetch_transcript_window(
+                pA1.start, 200, 100, gene))
+            outlines_3prime.extend(fetch_transcript_window(
+                pA2.start, 200, 100, gene))
+        else:
+            if hit_ratio >= 0.33:
+                continue
+            
+            outlines_5prime.extend(fetch_transcript_window(
+                pA2.start, 200, 100, gene))
+            outlines_3prime.extend(fetch_transcript_window(
+                pA1.start, 200, 100, gene))
+                                   
+
+    with IOTools.openFile(outfile_5prime, "w") as outfh:
+        for line in outlines_5prime:
+            outfh.write(line)
+
+    with IOTools.openFile(outfile_3prime, "w") as outfh:
+        for line in outlines_3prime:
+            outfh.write(line)
+
+
+def quantify_and_filter_clusters(clusters, aseqs, outfile):
+    ''' This function with take in a bedfile of cluster locations,
+    query the bedfiles given in aseq to sum the expression in those 
+    clusters. Clusters will be filtered on the basis of at least one
+    sample having a score of at least 1.9 TPM. The output will be a 
+    bed a comma seperated score column.'''
+
+    names = [re.match(".+/HEK293-Aseq_(.+)-R1", f).groups()[0]
+             for f in aseqs]
+    
+    aseqs = [Bed.readAndIndex(IOTools.openFile(bedfile), with_values=True)
+             for bedfile in aseqs]
+    outf = IOTools.openFile(outfile, "w")
+    warn_list = []
+    
+    for cluster in Bed.iterator(IOTools.openFile(clusters)):
+
+        scores = []
+        contig = cluster.contig
+        strand = cluster.strand
+        
+        for sample in aseqs:
+            try:
+                hits = list(sample[contig].find(cluster.start, cluster.end))
+            except KeyError:
+                if not contig in warn_list:
+                    E.warn("Contig %s not found" % contig)
+                    warn_list.append(warn_list)
+                continue
+            hits = [h[2] for h in hits]
+            hits = filter(lambda x: x.strand == strand, hits)
+            if len(hits) == 0:
+                scores.append(0)
+            else:
+                scores.append(sum(float(h.score) for h in hits))
+
+        if max(scores) >= 1.9:
+            cluster["name"] = ",".join(names)
+            cluster["score"] = ",".join(map(str, scores))
+            outf.write(str(cluster) + "\n")
+
+    outf.close()
+        
+            
+def get_alternate_polyA_distil_usage(gffile, bedfile, outfile):
+    '''This function takes transcripts with more than 1 paperclip ployA
+    signal and finds the ratio of the sum of all 5' sites to the 3' site'''
+
+    indexed_polyA = Bed.readAndIndex(IOTools.openFile(bedfile),
+                                     with_values=True)
+
+    outlines = []
+
+    for transcript in GTF.transcript_iterator(GTF.iterator(
+            IOTools.openFile(gffile))):
+
+        exons = GTF.asRanges(transcript, "exon")
+        if transcript[0].strand == "+":
+            last_exon = sorted(exons)[-1]
+        else:
+            last_exon = sorted(exons)[0]
+
+        hits = list(indexed_polyA[transcript[0].contig].find(last_exon[0], last_exon[1]))
+
+        if len(hits) < 2:
+            continue
+
+        hits = [h[2] for h in hits]
+    
+        hits = sorted(hits, key = lambda x: x.start)
+
+        if transcript[0].strand == "+":
+            pA_distil = hits[-1]
+            pA_prox = hits[:-1]
+    else:
+        pA_distil = hits[0]
+        pA_prox = hits[1:]
+
+        prox_scores = [c.score.split(",") for c in pA_prox]
+        prox_scores = [sum(map(float,s)) for s in zip(*prox_scores)]
+        distil_scores = map(float,pA_distil.score.split(","))
+
+        hit_ratios = [p/(p+d) if (p+d) > 0 else 0 for p, d in zip(prox_scores, distil_scores)]
+        
+        names = hits[0].name.split(",")
+
+        line = [transcript[0].gene_id, transcript[0].transcript_id]
+        line.extend(hit_ratios)
+        outlines.append(line)
+
+    header=["gene_id", "transcript_id"]
+    header.extend(names)
+    
+    IOTools.writeLines(outfile, outlines, header=header)
+
+
+def bed_score_to_TPM(infile, outfile):
+    '''Converts a bed file with counts in the score column into TPM'''
+
+    total = 0
+    for bed in Bed.iterator(IOTools.openFile(infile)):
+        total += float(bed.score)
+
+    outf = IOTools.openFile(outfile, "w")
+    for bed in Bed.iterator(IOTools.openFile(infile)):
+
+        bed["score"] = float(bed.score)*1000000.0/total
+        outf.write(str(bed)+"\n")
+    outf.close()
+
+def get_apa_chunks(table, gfffile, outfile):
+
+    outlines = []
+    for gtf in GTF.iterator(IOTools.openFile(gfffile)):
+        found = table.query("chr=='%s' and position>=%i and position<%i" %
+                            (gtf.contig, gtf.start, gtf.end),
+                            engine="python")
+        if found.shape[0] == 0:
+            outlines.append([gtf.gene_id, gtf["exon_id"], str(0)])
+        else:
+            outlines.append([gtf.gene_id, gtf["exon_id"], str(1)])
+    E.info("apa table has %i sites. found %i chunks" %(table.shape[0], sum(float(l[2]) for l in outlines)))
+    IOTools.writeLines(outfile, outlines, header=["gene_id", "exon_id", "apa_site"])
+    
+
+def meta_around_cluster(cluster, counts, strand, norm=False):
+
+    
+    counts_before_cluster = counts.loc[cluster[0]-100:(cluster[0]-1)]
+    counts_after_cluster = counts.loc[cluster[1]:cluster[1]+99]
+    counts_in_cluster = counts.loc[cluster[0]:cluster[1]]
+    
+    if counts_before_cluster.sum() + counts_after_cluster.sum() + \
+       counts_in_cluster.sum() == 0:
+        return None
+    
+    counts_in_cluster.index = counts_in_cluster.index-cluster[0]
+    
+    binned_cluster_counts = iCLIP.meta.bin_counts(
+        counts_in_cluster, cluster[1] - cluster[0], 32)
+    
+    binned_cluster_counts = binned_cluster_counts * 32.0/(cluster[1]-cluster[0])
+    
+    counts_before_cluster = counts_before_cluster.reindex(
+        range(cluster[0]-100, cluster[0]), fill_value=0)
+    counts_after_cluster = counts_after_cluster.reindex(
+        range(cluster[1], cluster[1] + 100), fill_value=0)
+    
+    if strand == "-":
+        
+        counts_after_cluster.index = range(0, -100, -1)
+        counts_before_cluster.index = range(132, 32, -1)
+        binned_cluster_counts.index = range(32, 0, -1)
+        
+        this_cluster_counts = pd.concat([counts_after_cluster,
+                                         binned_cluster_counts,
+                                         counts_before_cluster])
+        
+    else:
+        
+        counts_after_cluster.index = range(32, 132)
+        counts_before_cluster.index = range(-100, 0)
+        
+        this_cluster_counts = pd.concat([counts_before_cluster,
+                                         binned_cluster_counts,
+                                         counts_after_cluster])
+        
+    if norm:
+        this_cluster_counts = this_cluster_counts/this_cluster_counts.sum()
+            
+    return this_cluster_counts
+
+
+@cluster_runnable
+def get_profile_around_clusters(clusters_bed, to_profile, gtf, outfile,
+                                use_transcripts=None,
+                                norm=True,
+                                rands=0):
+    ''' This function with look for clusters in the final exon of transcripts in outfile
+    and build a metagene profile from the BAM or bw in to_profile around them.'''
+
+    stats = collections.Counter()
+    clusters = Bed.readAndIndex(IOTools.openFile(clusters_bed))
+    if to_profile.endswith(".bam"):
+        clip_getter = iCLIP.make_getter(bamfile=to_profile)
+    else:
+        clip_getter = iCLIP.make_getter(plus_wig=to_profile)
+
+    if rands == 0:
+        counts_accumulator = list()
+    else:
+        counts_accumulator = np.zeros([232, rands])
+        counts_accumulator = pd.DataFrame(counts_accumulator)
+        counts_accumulator.index = range(-100, 132)
+        
+    for transcript in GTF.transcript_iterator(GTF.iterator(
+          IOTools.openFile(gtf))):
+
+        if use_transcripts is not None and\
+           transcript[0].transcript_id not in use_transcripts:
+            continue
+        
+        stats["transcripts"] += 1
+        strand = transcript[0].strand
+        contig = transcript[0].contig
+        exons = GTF.asRanges(transcript, "exon")
+        if strand == "+":
+            last_exon = sorted(exons)[-1]
+        else:
+            last_exon = sorted(exons)[0]
+
+        # get clusters in this last exon.
+
+        if contig in clusters:
+            transcript_clusters = list(clusters[contig].find(
+                last_exon[0], last_exon[1]))
+        else:
+            continue
+
+        transcript_clusters = [c for c in transcript_clusters
+                               if c[0] >= (last_exon[0]+100) and
+                               c[1] < last_exon[1]-100]
+        
+        if len(transcript_clusters) == 0:
+            continue
+        
+        counts = iCLIP.count_intervals(clip_getter, [last_exon],
+                                       contig, strand)
+
+        if counts.sum() == 0:
+            continue
+
+        for cluster in transcript_clusters:
+            stats["clusters"] += 1
+            if rands == 0:
+                this_cluster_counts = meta_around_cluster(cluster, counts,
+                                                          strand, norm)
+                if counts_accumulator is not None:
+                    counts_accumulator.append(this_cluster_counts)
+                    stats["sites"] += this_cluster_counts.sum()
+            else:
+                clen = cluster[1] - cluster[0]
+                for i in range(rands):
+                    cluster = list(cluster)
+                    cluster[0] = random.randint(last_exon[0] + 100,
+                                                last_exon[1] - 101 - clen)
+                    cluster[1] = cluster[0] + clen
+                    this_cluster_counts = meta_around_cluster(
+                        cluster, counts, strand, norm)
+                    if this_cluster_counts is not None:
+                        counts_accumulator[i] = counts_accumulator[i].add(
+                            this_cluster_counts, fill_value=0)
+                        stats["sites"] += this_cluster_counts.sum()
+
+        E.debug("%i transcripts, %i clusters, %i sites" %
+                (stats["transcripts"], stats["clusters"], stats["sites"]))
+
+    if len(counts_accumulator) == 0:
+        cc = pd.Series([0]*232, index=range(-100,132))
+        counts_accumulator=[cc, cc.copy()]
+
+    if rands == 0:
+        df = pd.concat(counts_accumulator, axis=1).transpose()
+        profile = df.sum()
+        def boot_sum(df):
+            boot_sample = df.sample(n=df.shape[0], replace=True)
+            boot_sum = boot_sample.sum()
+            return boot_sum
+
+        boot_sums = [boot_sum(df) for x in range(1000)]
+        boot_sums = pd.concat(boot_sums, axis=1)
+    else:
+        boot_sums = counts_accumulator
+        profile = boot_sums.sum(axis=1)/rands
+
+    boot_quantiles = boot_sums.quantile([0.025,0.975], axis=1)
+    boot_quantiles.index = ["q2.5", "q97.5"]
+
+    profile.name = "count"
+    df = pd.concat([profile, boot_quantiles.transpose()], axis=1).reset_index()
+    df.columns.values[0] = "base"
+
+    df.to_csv(IOTools.openFile(outfile, "w"), index=False, sep="\t")
+    
+
+
+@cluster_runnable
+def get_profile_around_clipsites(sites_file, to_profile, gtf, outfile, use_transcripts=None,
+                                 norm=False):
+    ''' This function with look for clusters in the final exon of transcripts in outfile
+    and build a metagene profile from the BAM or bw in to_profile around them.'''
+
+    stats = collections.Counter()
+    if sites_file.endswith(".bam"):
+        sites_getter = iCLIP.make_getter(bamfile=sites_file)
+    else:
+        sites_getter = iCLIP.make_getter(plus_wig=sites_file)
+        
+    if to_profile.endswith(".bam"):
+        clip_getter = iCLIP.make_getter(bamfile=to_profile)
+    else:
+        clip_getter = iCLIP.make_getter(plus_wig=to_profile)
+
+    counts_accumulator = []
+    
+    for transcript in GTF.transcript_iterator(GTF.iterator(
+          IOTools.openFile(gtf))):
+
+        if use_transcripts is not None and \
+           transcript[0].transcript_id not in use_transcripts:
+            continue
+        
+        stats["transcripts"] += 1
+        strand = transcript[0].strand
+        exons = sorted([e for e in transcript if e.feature == "exon"],
+                       key=lambda x: x.start)
+        
+        if strand == "+":
+            last_exon = exons[-1]
+        else:
+            last_exon = exons[0]
+
+        # get clusters in this last exon.
+
+        if last_exon.end - last_exon.start < 200:
+            continue
+        
+        transcript_sites = iCLIP.count_transcript([last_exon], sites_getter)
+
+        transcript_sites = transcript_sites.loc[
+            100:(last_exon.end - last_exon.start - 100)]
+
+        if transcript_sites.sum() == 0:
+            continue
+
+        stats["clusters"] += len(transcript_sites)
+        
+        counts = iCLIP.count_transcript([last_exon], clip_getter)
+
+        if counts.sum() == 0:
+            continue
+
+        for site in transcript_sites.index:
+
+            site_counts = counts.loc[site-100:(site+100)]
+            if site_counts.sum() == 0:
+                continue
+            
+            site_counts.index = site_counts.index - site
+            site_counts = site_counts * transcript_sites.loc[site]
+            if norm:
+                site_counts = site_counts/site_counts.sum()
+                
+            counts_accumulator.append(site_counts)
+            stats["sites"] += site_counts.sum()
+
+        E.debug("%f transcripts, %f clusters, %f sites" %
+                (stats["transcripts"], stats["clusters"], stats["sites"]))
+
+    df = pd.concat(counts_accumulator, axis=1).transpose()
+    profile = df.sum()
+    def boot_sum(df):
+        boot_sample = df.sample(n=df.shape[0], replace=True)
+        boot_sum = boot_sample.sum()
+        return boot_sum
+
+    boot_sums = [boot_sum(df) for x in range(1000)]
+    boot_sums = pd.concat(boot_sums, axis=1)
+
+    boot_quantiles = boot_sums.quantile([0.025,0.975], axis=1)
+    boot_quantiles.index = ["q2.5", "q97.2"]
+
+    profile.name = "count"
+    df = pd.concat([profile, boot_quantiles.transpose()], axis=1).reset_index()
+    df.columns.values[0] = "base"
+
+    df.to_csv(IOTools.openFile(outfile, "w"), index=False, sep="\t")
+
+
+
+    

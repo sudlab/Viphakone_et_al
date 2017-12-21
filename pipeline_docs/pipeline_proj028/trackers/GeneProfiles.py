@@ -105,7 +105,7 @@ class ExonBoundaryProfiles(ProjectTracker):
 
     def __call__(self, track, slice):
 
-        statement = ''' SELECT position,density FROM %(table)s
+        statement = ''' SELECT track as factor, position,density FROM %(table)s
                         WHERE track = '%(track)s' AND replicate = '%(slice)s' '''
 
         results = self.getDataFrame(statement)
@@ -116,6 +116,23 @@ class ExonBoundaryProfiles(ProjectTracker):
         return results
 
 
+class ExonBoundaryProfilesWith4A3(ExonBoundaryProfiles):
+
+    def __call__(self, track, slice):
+
+        results =  ExonBoundaryProfiles.__call__(self, track, slice)
+        eif4a3 = ExonBoundaryProfiles.__call__(self, "eIF4A3-GFP", "union")
+
+        results = pandas.concat([results, eif4a3])
+
+        return results
+
+
+class CenteredExonBoundaryProfiles(ExonBoundaryProfilesWith4A3):
+
+    table = "centered_exon_boundary_profiles"
+
+    
 class FirstExonBoundaryProfiles(ProjectTracker, SQLStatementTracker):
 
     statement = '''SELECT protein, replicate, base, density 
@@ -147,6 +164,11 @@ class TranscriptomeExonBoundaryProfiles(ExonBoundaryProfiles):
     table = "transcriptome_exon_boundary_profiles"
 
 
+class TranscriptomeExonBoundaryProfilesWith4A3(ExonBoundaryProfilesWith4A3):
+
+    table = "transcriptome_exon_boundary_profiles"
+
+    
 class StubbsProfiles(ProjectTracker, SQLStatementTracker):
 
     fields = ("fraction", "condition")

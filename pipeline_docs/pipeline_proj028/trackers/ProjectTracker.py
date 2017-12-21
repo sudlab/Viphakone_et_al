@@ -13,9 +13,10 @@ class ProjectTracker(TrackerSQL):
 
     def __init__(self,  backend=None, *args, **kwargs):
 
-        
         attach = [(os.path.join(PARAMS["iclip_dir"], PARAMS["iclip_database"]),
                    "iclip"),
-                  (PARAMS["annotations_database"], "annotations")]
+                  (PARAMS["annotations_database"], "annotations"),
+                  (os.path.join(PARAMS["ejc_iclip_dir"], "csvdb"), "ejc"),
+                  (PARAMS["external_chtop_apa_db"], "chtop_apa")]
 
         TrackerSQL.__init__(self, backend, attach=attach, *args, **kwargs)

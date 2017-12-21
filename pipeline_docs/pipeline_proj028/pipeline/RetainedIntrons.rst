@@ -133,3 +133,61 @@ Detained vs. Retained introns
    Fraction of introns in the detained category that are differential on ALyref knockdown
 
 
+HEK293 detained and Retained
+----------------------------
+
+
+.. report:: RetainedIntrons.DetainedChunkSplicing
+   :render: r-ggplot
+   :groupby: all
+   :statement: aes(cut(log2((clip_tags/genomicData_width) + 1e-5),breaks=20)) + stat_summary(mapping=aes(y=as.numeric(padj<0.1 & is.finite(padj) & l2fold<0), col=T),fun.y=mean, geom="point") + stat_summary(mapping=aes(y=as.numeric(padj<0.1 & is.finite(padj) & l2fold < -0.58), col=F),fun.y=mean, geom="point")+ facet_grid(slice~track, scale="free_y") +theme_bw() + scale_color_manual(values=c("FALSE"="red", "TRUE"="black"), labels=c("FALSE"="FC>1.5", "TRUE"="FC>0"), name="Fold Change") + scale_x_discrete(labels=NULL, name = "log2 (clip tags/genome size") + ylab("Fraction significant increase in splicing efficiency")
+
+   Fraction of introns in detained category that show increased splicingon Alyref Knockdown
+
+Detained introns defined used FDR < 0.01 lfc > 2
+
+
+.. report:: RetainedIntrons.RetainedChunkSplicing
+   :render: r-ggplot
+   :groupby: all
+   :statement: aes(cut(log2((clip_tags/genomicData_width) + 1e-5),breaks=20)) + stat_summary(mapping=aes(y=as.numeric(padj<0.1 & is.finite(padj) & l2fold<0), col=T),fun.y=mean, geom="point") + stat_summary(mapping=aes(y=as.numeric(padj<0.1 & is.finite(padj) & l2fold < -0.58), col=F),fun.y=mean, geom="point")+ facet_grid(slice~track, scale="free_y") +theme_bw() + scale_color_manual(values=c("FALSE"="red", "TRUE"="black"), labels=c("FALSE"="FC>1.5", "TRUE"="FC>0"), name="Fold Change") + scale_x_discrete(labels=NULL, name = "log2 (clip tags/genome size") + ylab("Fraction significant increase in splicing efficiency")
+
+   Fraction of introns in retained category that show increased splicingon Alyref Knockdown
+
+Detained introns defined used FDR < 0.01 lfc > 2
+
+
+.. report:: RetainedIntrons.CombinedChunkSplicing
+   :render: r-ggplot
+   :groupby: all
+   :statement: aes(cut(log2((clip_tags/genomicData_width) + 1e-5),breaks=20)) + stat_summary(mapping=aes(y=as.numeric(padj<0.1 & is.finite(padj) & l2fold<0), col=T),fun.y=mean, geom="point") + stat_summary(mapping=aes(y=as.numeric(padj<0.1 & is.finite(padj) & l2fold < -0.58), col=F),fun.y=mean, geom="point")+ facet_grid(slice~track, scale="free_y") +theme_bw() + scale_color_manual(values=c("FALSE"="red", "TRUE"="black"), labels=c("FALSE"="FC>1.5", "TRUE"="FC>0"), name="Fold Change") + scale_x_discrete(labels=NULL, name = "log2 (clip tags/genome size") + ylab("Fraction significant increase in splicing efficiency")
+
+   Fraction of introns in retained category that show increased splicingon Alyref Knockdown
+
+Detained introns defined used FDR < 0.01 lfc > 2
+
+
+Enrichment
++++++++++++
+
+The following show the *enrichment* of De/Retained Introns in transcript regions that are differentially reduced on Alyref knockdown.
+
+.. report:: RetainedIntrons.DetainedEnrichment
+   :render: r-ggplot
+   :statement: aes(x=clip_bin, y=enrichment, col=p<0.05/20) + geom_point() + scale_x_discrete(labels=NULL, name = "log2 (clip tags/genome size") + ylab("Enrichment") + scale_color_manual(name="", labels=c("TRUE"="Significant", "FALSE"="Not Significant"), values=c("TRUE"="red", "FALSE"="black")) + facet_grid(slice~.) + theme_bw()
+
+   Fold Enrichment of detained introns in chunks more efficiently spliced on ALyref knockdown
+
+
+.. report:: RetainedIntrons.RetainedEnrichment
+   :render: r-ggplot
+   :statement: aes(x=clip_bin, y=enrichment, col=p<0.05/20) + geom_point() + scale_x_discrete(labels=NULL, name = "log2 (clip tags/genome size") + ylab("Enrichment") + scale_color_manual(name="", labels=c("TRUE"="Significant", "FALSE"="Not Significant"), values=c("TRUE"="red", "FALSE"="black")) + facet_grid(slice~., scale="free_y") + theme_bw()
+
+   Fold Enrichment of retained introns in chunks more efficiently spliced on ALyref knockdown
+
+
+.. report:: RetainedIntrons.CombinedEnrichment
+   :render: r-ggplot
+   :statement: aes(x=clip_bin, y=enrichment, col=p<0.05/20) + geom_point() + scale_x_discrete(labels=NULL, name = "log2 (clip tags/genome size") + ylab("Enrichment") + scale_color_manual(name="", labels=c("TRUE"="Significant", "FALSE"="Not Significant"), values=c("TRUE"="red", "FALSE"="black")) + facet_grid(slice~., scale="free_y") + theme_bw()
+
+   Fold Enrichment of detained or retained introns in chunks more efficiently spliced on ALyref knockdown

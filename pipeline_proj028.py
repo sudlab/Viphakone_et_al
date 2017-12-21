@@ -166,9 +166,11 @@ def connect():
     '''
 
     dbh = sqlite3.connect( PARAMS["database_name"] )
-    statement = '''ATTACH DATABASE '%s' as annotations''' % (PARAMS["annotations_database"])
+    statement = '''ATTACH DATABASE '%s' as annotations;
+                   ATTACH DATABASE '%s' as chtop_apa''' % (PARAMS["annotations_database"],
+                                                           PARAMS["external_chtop_apa_db"])
     cc = dbh.cursor()
-    cc.execute( statement )
+    cc.executescript( statement )
     cc.close()
 
     return dbh
@@ -442,7 +444,7 @@ def calculateSTOPProfiles(infiles, outfile):
            regex("gene_profiles.dir/(.+-FLAG-R[0-9]+).CDS_profile.log"),
            inputs([r"gene_profiles.dir/\1.utrprofile.profiles.tsv.gz",
                    r"gene_profiles.dir/%s.utrprofile.profiles.tsv.gz" %
-                   P.snip(glob.glob("*.bam")[0])]),
+                   P.snip(PARAMS["rnaseq_nuclear"], ".bam")]),
            [r"gene_profiles.dir/\1.rnaseq_normed.matrix.tsv.gz",
             r"gene_profiles.dir/\1.rnaseq_normed.profile.tsv.gz"])
 def normalizedToRNASeq(infiles, outfiles):
@@ -546,7 +548,7 @@ def SingleVsMultiExonGeneProfiles(infiles, outfile):
                            %(bamfile)s
                            --scale-flanks
                            --output-matrix=%(matrix_out)s
-                           -S %(outfile)s
+                            -S %(outfile)s
                            -b 25
                            --flank-bins=25
                            --normalised_profile '''
@@ -684,11 +686,11 @@ def quantileProfiles():
 # Exon Junction Profiles
 ###################################################################
 @follows(mkdir("transcriptome.dir"))
-@transform(os.path.join(PARAMS["iclip_dir"],
-                        "deduped.dir/*-FLAG-R*.bam"),
-           regex(".+/(.+-FLAG-R.)\.bam"),
-           inputs(os.path.join(PARAMS["dir_transcriptome"],
-                               r"\1.bwa.bam")),
+@transform([os.path.join(PARAMS["dir_transcriptome"],
+                         "*-FLAG-R?.bwa.bam"),
+            os.path.join(PARAMS["dir_ejc_transcriptome"],
+                         "eIF4A3-GFP-R?.bwa.bam")],
+           regex(".+/(.+-.+-R[^3])\.bwa\.bam"),
            r"transcriptome.dir/\1.bam")
 def dedupAndSplitTranscriptome(infile, outfile):
     '''UMI dedup the transcriptome mapping bams and split multiple 
@@ -698,7 +700,7 @@ def dedupAndSplitTranscriptome(infile, outfile):
     statement = '''samtools view -h %(infile)s
                  | xa2multi.pl
                  | samtools sort -o %(track)s.tmp.bam 
-                                 -T %(track)s.tmp
+                                 
                    2>> %(track)s.log;
 
                    checkpoint;
@@ -709,10 +711,9 @@ def dedupAndSplitTranscriptome(infile, outfile):
 
                    umi_tools dedup
                           -I %(track)s.tmp.bam
-                          --method=directional-adjacency
+                          --method=directional
                           -L %(track)s.log
-                 | samtools sort -o %(outfile)s
-                                 -T %(track)s;
+                 | samtools sort -o %(outfile)s;
 
                    checkpoint;
 
@@ -727,8 +728,8 @@ def dedupAndSplitTranscriptome(infile, outfile):
 
 ###################################################################
 @collate(dedupAndSplitTranscriptome,
-         regex("(.+)-FLAG-(.+).bam"),
-         r"\1-FLAG-union.bam")
+         regex("(.+-[^-]+)-(.+).bam"),
+         r"\1-union.bam")
 def getTranscritomeUnionBam(infiles, outfile):
 
     infiles = " ".join(infiles)
@@ -766,7 +767,13 @@ def getTranscriptomeExonBoundaryProfiles(infiles, outfile):
 
     bam, gtf = infiles
 
+    if "GFP" in outfile:
+        center=True
+    else:
+        center=False
+        
     PipelineProj028.exonBoundaryProfiles(bam, gtf, outfile,
+                                         center=center,
                                          submit=True,
                                          logfile=outfile + ".log",
                                          job_options="-l mem_free=10G")
@@ -774,30 +781,56 @@ def getTranscriptomeExonBoundaryProfiles(infiles, outfile):
 
 ###################################################################
 @follows(mkdir("exon_boundary_profiles.dir"))
-@transform(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
-           regex(".+/(.+-FLAG-R[0-9]+|.+-FLAG.union).bam"),
+@transform([os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
+            os.path.join(PARAMS["ejc_iclip_dir"],
+                         "deduped.dir/eIF4A3-GFP.union.bam")],
+           regex(".+/(.+-.+-R[0-9]+|.+-.+.union).bam"),
            add_inputs(filterExpressedTranscripts),
            r"exon_boundary_profiles.dir/\1.exon_profile.tsv.gz")
 def getExonBoundaryProfiles(infiles, outfile):
 
     bam, gtf = infiles
 
-    
+    if "GFP" in bam:
+        center = True
+    else:
+        center = False
+        
     PipelineProj028.exonBoundaryProfiles(bam, gtf, outfile,
+                                         center=center,
                                          submit=True,
                                          logfile=outfile + ".log",
                                          job_memory="15G")
 
 
+@follows(mkdir("exon_boundary_profiles.dir"))
+@transform([os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
+            os.path.join(PARAMS["ejc_iclip_dir"],
+                         "deduped.dir/eIF4A3-GFP.union.bam")],
+           regex(".+/(.+-.+-R[0-9]+|.+-.+.union).bam"),
+           add_inputs(filterExpressedTranscripts),
+           r"exon_boundary_profiles.dir/\1.centered.exon_profile.tsv.gz")
+def getCenteredExonBoundaryProfiles(infiles, outfile):
+
+    bam, gtf = infiles
+      
+    PipelineProj028.exonBoundaryProfiles(bam, gtf, outfile,
+                                         center=True,
+                                         submit=True,
+                                         logfile=outfile + ".log",
+                                         job_memory="15G")
+
+    
 ###################################################################
 @collate([getExonBoundaryProfiles,
+          getCenteredExonBoundaryProfiles,
           getTranscriptomeExonBoundaryProfiles],
-         regex("(.+)/(.+-FLAG-R[0-9]|.+-FLAG.union)\.(transcriptome\.exon|exon)_profile.tsv.gz"),
+         regex("(.+)/(.+-.+-R[0-9]|.+-.+.union)\.(transcriptome\.exon|centered\.exon|exon)_profile.tsv.gz"),
          r"\1/\3_boundary_profiles.load")
 def loadExonBoundaryProfiles(infiles, outfile):
 
     P.concatenateAndLoad(infiles, outfile,
-                         regex_filename=".+/(.+-FLAG).(R[0-9]|union)\..*exon_profile",
+                         regex_filename=".+/(.+-FLAG|.+-GFP).(R[0-9]|union)\..*exon_profile",
                          cat="track,replicate",
                          options="-i position -i replicate")
 
@@ -948,9 +981,12 @@ def getNonHistoneSingleExon(infiles, outfile):
 
 
 ###################################################################
-@product(os.path.join(
+@product([os.path.join(
                 PARAMS["iclip_dir"],
                 "deduped.dir/*.bam"),
+          os.path.join(
+                PARAMS["ejc_iclip_dir"],
+                "deduped.dir/*.bam")],
          formatter(".+/(.+).bam"),
          [getHistoneAnno, getNonHistoneSingleExon],
          formatter(".+/(.+).gtf.gz"),
@@ -977,14 +1013,13 @@ def doHistoneMetaGene(infiles, outfile):
 def loadHistoneMetaGenes(infiles, outfile):
 
     P.concatenateAndLoad(infiles, outfile,
-                         regex_filename="histones.dir/(.+-FLAG).(.+)_vs_(.+)_profile.tsv",
+                         regex_filename="histones.dir/(.+-FLAG|.+-GFP).(.+)_vs_(.+)_profile.tsv",
                          cat="factor,replicate,geneset",
                          options="-i factor -i replicate -i geneset")
 
 
 ###################################################################
-@files(os.path.join(PARAMS["dir_external"],
-                    "histone_genes.tsv"),
+@files(PARAMS["external_histones"],
        "histone_genes.load")
 def load_histone_genes(infile, outfile):
 
@@ -1028,8 +1063,10 @@ def filterGenesForHeatmaps(infile, outfile):
 
 ###################################################################
 @follows(mkdir("heatmaps"))
-@subdivide(os.path.join(PARAMS["iclip_dir"],
+@subdivide([os.path.join(PARAMS["iclip_dir"],
                         "deduped.dir/*union.bam"),
+            os.path.join(PARAMS["ejc_iclip_dir"],
+                         "deduped.dir/*union.bam")],
            regex(".+/(.+).bam"),
            add_inputs(filterGenesForHeatmaps),
            [r"heatmaps/\1.forward.matrix.tsv.gz",
@@ -1109,7 +1146,7 @@ def generate_start_aligned_plots(infiles, outfile):
 
 ###################################################################
 @transform(generate_start_aligned_plots,
-           regex("(.+-FLAG.+).(forward|reverse).compressed.png"),
+           regex("(.+-FLAG.+|.+-GFP.+).(forward|reverse).compressed.png"),
            inputs([r"\1.\2.compressed.matrix.tsv.gz",
                    generate_start_aligned_RNAseq_matrix]),  
            r"\1.\2.normed.png")
@@ -1124,7 +1161,7 @@ def RNAseq_norm_start_aligned(infiles, outfile):
 
     statement = ''' python %(project_src)s/iCLIPlib/scripts/iCLIP_bam2heatmap.py
                      -r quantile
-                     --crop=-1000:10000
+                     --crop=-975:10000
                      --outfile-prefix=%(outfile_p)s
                      -L %(outfile_p)s.log
                     --use-matrix=%(iclip_matrix)s
@@ -1889,7 +1926,8 @@ def getTranscriptChunks(infile, outfile):
             "*.bam",
             os.path.join(PARAMS["dir_external"],
                          "stubbsRNAseq/*.bam"),
-            os.path.join(PARAMS["dir_ejc_iclip"], "deduped.dir/*.bam")],
+            os.path.join(PARAMS["dir_ejc_iclip"], "deduped.dir/*.bam"),
+            merge_encode_replicates],
            regex("(?:.+/)?([-\w]+(?:\.union|\.reproducible)?).+"),
            add_inputs(getTranscriptChunks),
            r"transcript_chunks.dir/\1.chunk_counts.tsv.gz")
@@ -1912,22 +1950,16 @@ def countChunks(infiles, outfile):
 @transform(getTranscriptChunks,
            suffix(".gtf.gz"),
            add_inputs(os.path.join(PARAMS["annotations_dir"],
-                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+                        PARAMS_ANNOTATIONS["interface_geneset_exons_gtf"])),
            ".introns.load")
 def annotateIntronChunks(infiles, outfile):
     '''Find those transcript chunks that represent consituative introns'''
 
     chunks, transcripts = infiles
 
-    statement = ''' python %(scriptsdir)s/gtf2gtf.py
-                           -I %(transcripts)s
-                           -L %(outfile)s.log
-                          --method=merge-exons
-                 | python %(scriptsdir)s/gtf2gtf.py
-                           -L %(outfile)s.log
-                          --method=exons2introns
-                 | bedtools intersect -a %(chunks)s -b - -c
-                 | sed -E 's/.+gene_id \\"(ENSG[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
+    statement = '''bedtools intersect -v -a %(chunks)s -b %(transcripts)s
+                 | bedtools intersect -a %(chunks)s -b - -c -s
+                 | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
                  | sed '1i gene_id\\texon_id\\tintron'
                  | %(load_smt)s > %(outfile)s'''
     tablename = P.toTable(outfile)
@@ -1954,8 +1986,8 @@ def annotateExonsChunks(infiles, outfile):
                            -L %(outfile)s.log
                           --method=intersect-transcripts
                          
-                 | bedtools intersect -a %(chunks)s -b - -c
-                 | sed -E 's/.+gene_id \\"(ENSG[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
+                 | bedtools intersect -a %(chunks)s -b - -c -s
+                 | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
                  | sed '1i gene_id\\texon_id\\texon'
                  | %(load_smt)s > %(outfile)s'''
     tablename = P.toTable(outfile)
@@ -1977,7 +2009,7 @@ def annotateDetainedChunks(infiles, outfile):
     chunks, introns = infiles
 
     statement = ''' bedtools intersect -a %(chunks)s -b %(introns)s -c
-                  | sed -E 's/.+gene_id \\"(ENSG[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
+                  | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
                   | sed '1i gene_id\\texon_id\\texon'
                   | %(load_smt)s > %(outfile)s'''
     tablename = P.toTable(outfile)
@@ -1989,33 +2021,169 @@ def annotateDetainedChunks(infiles, outfile):
 
     
 ###################################################################
+@follows(mkdir("transcript_chunks.dir"))
 @transform(os.path.join(PARAMS["annotations_dir"],
                         PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
            regex(".+/(.+).gtf.gz"),
-           r"transcript_chunks.dir/\1.pc_last_exons.gtf.gz")
-def get_last_pc_exons(infile, outfile):
+           r"transcript_chunks.dir/\1.last_pc_exons.gtf.gz")
+def get_transcript_last_pc_exons(infile, outfile):
 
     PipelineProj028.get_last_pc_exons(infile, outfile)
 
-
+    
 ###################################################################
-@transform(getTranscriptChunks,
-           suffix(".gtf.gz"),
-           add_inputs(get_last_pc_exons),
-           ".last_pc_exons.load")
-def annotateLastExons(infiles, outfile):
+@follows(mkdir("transcript_chunks.dir"))
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           regex(".+/(.+).gtf.gz"),
+           r"transcript_chunks.dir/\1.first_pc_exons.gtf.gz")
+def get_transcript_first_pc_exons(infile, outfile):
 
-    chunks, exons = infiles
+    PipelineProj028.get_first_pc_exons(infile, outfile)
 
+    
+###################################################################
+@follows(mkdir("transcript_chunks.dir"))
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           regex(".+/(.+).gtf.gz"),
+           r"transcript_chunks.dir/\1.gene_last_pc_exons.gtf.gz")
+def get_gene_last_pc_exons(infile, outfile):
+
+    tmpfile = P.getTempFilename(dir=".")
+    statement = '''cgat gtf2gtf --method=merge-exons
+                                -I %(infile)s
+                                -S %(tmpfile)s'''
+    P.run()
+    
+    PipelineProj028.get_last_pc_exons(tmpfile, outfile)
+
+    os.unlink(tmpfile)
+    
+    
+###################################################################
+@follows(mkdir("transcript_chunks.dir"))
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           regex(".+/(.+).gtf.gz"),
+           r"transcript_chunks.dir/\1.gene_first_pc_exons.gtf.gz")
+def get_gene_first_pc_exons(infile, outfile):
+
+    tmpfile = P.getTempFilename(dir=".")
+    statement = '''cgat gtf2gtf --method=merge-exons
+                                -I %(infile)s
+                                -S %(tmpfile)s'''
+    P.run()
+    
+    PipelineProj028.get_first_pc_exons(tmpfile, outfile)
+
+    os.unlink(tmpfile)
+
+    
+###################################################################
+@transform([get_transcript_last_pc_exons,
+            get_gene_last_pc_exons,
+            get_transcript_first_pc_exons,
+            get_gene_first_pc_exons],
+           regex(".+\.([^\.]+_pc_exons).gtf.gz"),
+           add_inputs(getTranscriptChunks),
+           r"reference_chunks.\1.load")
+def annotateFirstLastExons(infiles, outfile):
+
+    exons, chunks = infiles
+
+    if "first" in exons:
+        colname = "first"
+    elif "last" in exons:
+        colname = "last"
+    else:
+        raise ValueError(exons)
+    
     statement = '''bedtools intersect -a %(chunks)s -b %(exons)s -c
-                  | sed -E 's/.+gene_id \\"(ENSG[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
-                  | sed '1i gene_id\\texon_id\\tlast'
+                  | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
+                  | sed '1i gene_id\\texon_id\\t%(colname)s'
                   | %(load_smt)s > %(outfile)s'''
 
     tablename = P.toTable(outfile)
     load_smt = P.build_load_statement(tablename=tablename,
                                       options="-i gene_id -i exon_id")
     P.run()
+
+
+################################################################
+@follows(mkdir("retained_introns.dir"))
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_exons_gtf"]),
+           regex(".+/(.+).gtf.gz"),
+           r"retained_introns.dir/\1.retained_introns.bed.gz")
+def getRetainedIntrons(infile, outfile):
+
+    statement = '''
+                python %(scriptsdir)s/gtf2gtf.py -I %(infile)s
+                                       -m find-retained-introns
+                | python %(scriptsdir)s/gff2bed.py --is-gtf
+                | gzip > %(outfile)s '''
+
+    P.run()
+
+    
+###################################################################
+@transform(getTranscriptChunks,
+           suffix(".gtf.gz"),
+           add_inputs(os.path.join(PARAMS["annotations_dir"],
+                                   PARAMS_ANNOTATIONS["interface_geneset_flat_gtf"])),
+           ".nGenes.load")
+def find_n_genes_overlapping_chunks(infiles, outfile):
+    '''For each chunk, find the number of genes that overlap it'''
+
+    chunks, genes = infiles
+    statement = ''' cgat gtf2gtf -I %(genes)s --method=merge-transcripts -L %(outfile)s.log
+                 | sort -k1,1 -k2,2n
+                 | bedtools intersect -a %(chunks)s -b - -c
+                 | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/'
+                 | sed '1i gene_id\\texon_id\\tnGenes'
+                 | %(load_smt)s > %(outfile)s'''
+
+    tablename = P.toTable(outfile)
+    load_smt = P.build_load_statement(tablename=tablename,
+                                      options="-i gene_id -i exon_id")
+    P.run()
+
+    
+###################################################################   
+@follows(mkdir("transcript_chunks.dir"))
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_exons_gtf"]),
+           regex(".+/(.+).gtf.gz"),
+           r"transcript_chunks.dir/\1.retained_introns.gtf.gz")
+def getMatchedRetainedIntrons(infile, outfile):
+
+    PipelineProj028.getRetainedIntronsFromMatchedTranscripts(infile, outfile)
+
+
+###################################################################
+@transform(getTranscriptChunks,
+           suffix(".gtf.gz"),
+           add_inputs(getMatchedRetainedIntrons),
+           ".retained_introns.load")
+def annotateRetainedIntronChunks(infiles, outfile):
+
+    chunks, introns = infiles
+
+    statement = '''bedtools intersect -a %(chunks)s -b %(introns)s -s -c
+                 |  sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/'
+                 | sed '1i gene_id\\texon_id\\tretained'
+                 | %(load_smt)s > %(outfile)s'''
+
+    tablename = P.toTable(outfile)
+    load_smt = P.build_load_statement(tablename=tablename,
+                                      options="-i gene_id -i exon_id")
+    P.run()
+
+    connect().executescript('''DROP INDEX IF EXISTS %(tablename)s_joint;
+                               CREATE INDEX %(tablename)s_joint ON
+                                     %(tablename)s(gene_id, exon_id)'''
+                            % locals())
 
     
 ###################################################################
@@ -2041,16 +2209,18 @@ def loadChunkCounts(infiles, outfile):
 
 
 ###################################################################
-@merge([loadChunkCounts, annotateExonsChunks, annotateIntronChunks,
-        annotateDetainedChunks, annotateLastExons],
-       "transcript_chunks.dir/chunk_indexes.load")
-def jointIndexOnChunks(infiles, outfile):
+@jobs_limit(1)
+@transform([loadChunkCounts, annotateExonsChunks, annotateIntronChunks,
+            annotateDetainedChunks, annotateFirstLastExons,
+            find_n_genes_overlapping_chunks],
+           suffix(".load"),
+           ".index")
+def jointIndexOnChunks(infile, outfile):
 
     cc = connect()
 
-    for infile in infiles:
-        table = P.toTable(infile)
-        cc.executescript(
+    table = P.toTable(infile)
+    cc.executescript(
             '''DROP INDEX IF EXISTS %(table)s_joint;
                CREATE INDEX %(table)s_joint ON %(table)s(gene_id,exon_id)'''
             % locals())
@@ -2059,7 +2229,7 @@ def jointIndexOnChunks(infiles, outfile):
 
 
 ###################################################################
-@follows(jointIndexOnChunks)
+@follows(jointIndexOnChunks, annotateRetainedIntronChunks)
 def transcript_chunks():
     pass
 
@@ -2067,30 +2237,175 @@ def transcript_chunks():
 # DEXseq on chunks
 #################################################################
 ###################################################################
+@follows(mkdir("chunk_splicing.dir"))
+@transform(os.path.join(PARAMS["dir_external"],
+                         "stubbsRNAseq/*.bam"),
+           
+           regex(".+/(.+_.+_R.).+bam"),
+           add_inputs(getTranscriptChunks),
+           r"chunk_splicing.dir/\1.chunk_feature_counts.tsv.gz")
+def feature_count_chunks(infiles, outfile):
+    '''Use feature counts to count number of RNA seq reads in each chunk'''
+
+    bamfile, annotations = infiles
+    
+    PipelineRnaseq.runFeatureCounts(
+        annotations,
+        bamfile,
+        outfile,
+        job_threads=PARAMS['featurecounts_threads'],
+        strand=0,
+        options='-O --primary -M --minReadOverlap 10 -f')
+
+    
+###################################################################
+@transform([PARAMS["external_detained_calling_bams"],
+            PARAMS["dir_chtop_rnai_bams"]],
+           regex(".+/([^\.]+).*bam"),
+           add_inputs(getTranscriptChunks),
+           r"chunk_splicing.dir/\1.chunk_uniq_counts.tsv.gz")
+def feature_count_chunks_uniq(infiles, outfile):
+    
+    bamfile, annotations = infiles
+    
+    PipelineRnaseq.runFeatureCounts(
+        annotations,
+        bamfile,
+        outfile,
+        job_threads=PARAMS['featurecounts_threads'],
+        strand=0,
+        options='-O --minReadOverlap 10 -f -s 2 -p')
+
+    
+ ###################################################################   
+@collate([feature_count_chunks,
+          feature_count_chunks_uniq],
+         regex("chunk_splicing.dir/(.+).chunk_(.+)_counts.tsv.gz"),
+         r"chunk_splicing.dir/chunk_\2_counts.tsv.gz")
+def merge_feature_count_chunks(infiles, outfile):
+
+    infiles = " ".join(infiles)
+
+    statement=''' python %(scriptsdir)s/combine_tables.py
+                         -c 1,2,3,4,5,6
+                         -k 7
+                         --regex-filename='(.+).chunk_.+_counts.tsv.gz'
+                         --use-file-prefix
+                         %(infiles)s
+                         -L %(outfile)s.log
+               | gzip > %(outfile)s '''
+
+    P.run()
+
+    
+###################################################################
+@transform(getTranscriptChunks,
+           regex(".+/(.+).gtf.gz"),
+           add_inputs(PARAMS["external_mappability"],
+                      annotateIntronChunks),
+           r"chunk_splicing.dir/intron_lengths.tsv.gz")
+def calculate_introns_lengths(infiles, outfile):
+
+    chunks, mappability, _ = infiles
+    statement='''python %(project_src)s/calculate_effective_length.py
+                        -I %(chunks)s
+                        -l 100
+                        -b %(mappability)s
+                        -d %(database_name)s
+                        -S %(outfile)s'''
+    P.run()
+
+    
+###################################################################
+@transform(calculate_introns_lengths,
+           suffix(".tsv.gz"),
+           ".load")
+def load_intron_lengths(infile, outfile):
+
+    P.load(infile, outfile)
+
+    connect().executescript('''DROP INDEX IF EXISTS intron_length_joint;
+                               CREATE INDEX intron_length_joint
+                                   ON intron_lengths(gene_id, exon_id)''')
+
+####################################################################
+@transform(merge_feature_count_chunks,
+           regex("(.+)uniq(.+)"),
+           add_inputs(load_intron_lengths),
+           r"chunk_splicing.dir/detained_intron_calls.tsv")
+def call_detained_introns(infile, outfile):
+
+    basedir = os.path.abspath(PARAMS["workingdir"])
+    statement = ''' Rscript -e 'library(knitr); 
+                                knitr::opts_knit$set(root.dir="%(basedir)s");
+                                knit("%(project_src)s/find_detained_introns.Rmd") ' '''
+    P.run()
+
+
+@transform(call_detained_introns,
+           suffix(".tsv"),
+           ".load")
+def load_detained_intron_calls(infile, outfile):
+
+    P.load(infile, outfile, "-i gene_id -i intron_id -i fraction")
+
+    connect().executescript('''DROP INDEX IF EXISTS detained_intron_joint;
+                               CREATE INDEX detained_intron_joint
+                                  ON detained_intron_calls(gene_id, intron_id)''')
+
+    
+###################################################################
+@follows(load_intron_lengths, load_detained_intron_calls, annotateRetainedIntronChunks)
+def find_detained_introns():
+    pass
+
+###################################################################
 @transform("*.ri_design.tsv",
            regex("(.+).ri_design.tsv"),
-           add_inputs(countChunks,
+           add_inputs(merge_feature_count_chunks,
                       getTranscriptChunks),
-           r"transcript_chunks.dir/\1.dexseq.tsv")
+           r"chunk_splicing.dir/\1.dexseq.tsv")
 def runDEXSeqOnChunks(infiles, outfile):
     ''' Run DEXSeq using the stubbs RNAseq and the transcript
     modeles with retained introns '''
 
+    if "chtop" not in infiles[0]:
+        infiles = [f for f in infiles if 'uniq' not in f]
+    else:
+        infiles = [infiles[0]] + [f for f in infiles if "uniq" in f] + [infiles[-1]]
+        
     design, counts, models = infiles
 
+    
     infiles = ",".join([models, counts, design])
     outfile = P.snip(outfile, ".tsv")
 
     job_threads = 6
     job_memory="10G"
 
-    statement = ''' Rscript %(project_src)s/run_dexseq.R 
+    statement = ''' Rscript %(project_src)s/run_dexseq_all.R 
                             --infiles %(infiles)s
                             --outfiles %(outfile)s.tsv,%(outfile)s.gtf.gz,%(outfile)s.RData
                     &> %(outfile)s.log '''
 
     P.run()
 
+    
+###################################################################
+@merge(runDEXSeqOnChunks,
+       "chunk_splicing.dir/chunk_splicing.load")
+def load_dexseq_on_chunks(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename="chunk_splicing.dir/(.+).dexseq",
+                         options = "-i track -i groupID -i featureID")
+
+    connect().executescript('''DROP INDEX IF EXISTS chunk_splicing_joint;
+                               CREATE INDEX chunk_splicing_join ON
+                                  chunk_splicing(groupID, featureID)''')
+
+
+    
 ###################################################################
 @follows(mkdir("exon_intron_ratio.dir"))
 @transform(os.path.join(PARAMS["dir_iclip"], "deduped.dir/*union.bam"),
@@ -2840,22 +3155,6 @@ def loadArrayPlatform(infile, outfile):
 
 
 ###################################################################
-@follows(mkdir("retained_introns.dir"))
-@transform(os.path.join(PARAMS["iclip_dir"],
-                        "mapping.dir/geneset.dir/reference.gtf.gz"),
-           regex(".+/(.+).gtf.gz"),
-           r"retained_introns.dir/\1.retained_introns.bed.gz")
-def getRetainedIntrons(infile, outfile):
-
-    statement = '''python %(scriptsdir)s/gtf2gtf.py -I %(infile)s
-                                       -m find-retained-introns
-                | python %(scriptsdir)s/gff2bed.py --is-gtf
-                | gzip > %(outfile)s '''
-
-    P.run()
-
-
-###################################################################
 @transform([os.path.join(PARAMS["iclip_dir"],
                         "clusters.dir/*.bed.gz"),
             getUnionClusters],
@@ -3163,7 +3462,7 @@ def loadGenesWithRetainedIntronClusters(infile, outfile):
 
     tablename = P.toTable(outfile)
     statement = ''' zcat %(infile)s
-                 | perl -lane '/(ENSG[0-9]+)/ && print $1'
+                 | perl -lane '/(ENS[A-Z]+[0-9]+)/ && print $1'
                  | python %(scriptsdir)s/csv2db.py 
                    --table=%(tablename)s 
                    --database=%(database)s
@@ -4204,6 +4503,558 @@ def load_chimeric_stats(infiles, outfile):
 def chimeric_reads():
     pass
 
+###################################################################
+# PAPERCLIP AND ChTop
+###################################################################
+@follows(mkdir("paperclip_chtop.dir"))
+@originate("paperclip_chtop.dir/HEK293_paperclip.bed.gz")
+def download_paperclip(outfile):
+    '''download the paperclip data from GEO as a bed file'''
+
+    address = "ftp://ftp.ncbi.nlm.nih.gov/geo/series/GSE66nnn/GSE66092/suppl/GSE66092%5FHEK293%5FBC2%5F16414%5FGeneAssigned%2Ebed%2Egz"
+    statement = '''wget 
+                   %(address)s
+                   -O %(outfile)s'''
+    P.run()
+
+    
+###################################################################
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           formatter(),
+           add_inputs(download_paperclip),
+           "paperclip_chtop.dir/single_polyA_windows.gtf.gz")
+def get_single_polyA_windows(infiles, outfile):
+    '''Extracts 100bp around polyA sites where a transcript only contains
+    a single site'''
+
+    gtffile, bedfile = infiles
+    PipelineProj028.get_single_polyA_windows(gtffile, bedfile, outfile)
+
+    
+###################################################################
+@transform([os.path.join(PARAMS["iclip_dir"],
+                         "deduped.dir/*union.bam"),
+            merge_cpsf_wigs],
+           regex(".+/(.+).union.(bam|bw)"),
+           add_inputs(get_single_polyA_windows),
+           r"paperclip_chtop.dir/\1.single_polyA_metagene.tsv",
+           r"\2")
+def get_metagene_over_single_polyA_windows(infiles, outfile, informat):
+    '''Generate metagene plots around polyA signals where a transcript
+    has just a single polyA site in the paperclip'''
+
+    job_options = "-l mem_free=15G"
+    bamfile, gtffile = infiles
+
+    if informat == "bam":
+        instat = bamfile
+    elif informat == "bw":
+        instat = "--plus-wig=%s" % bamfile
+        
+    statement = '''python %(project_src)s/iCLIPlib/scripts/iCLIP_bam2geneprofile.py
+                           -I %(gtffile)s
+                           %(instat)s
+                           --flanks=0
+                           -S %(outfile)s
+                           -b 60
+                           -L %(outfile)s.log'''
+    P.run()
+    
+
+@merge(get_metagene_over_single_polyA_windows,
+       "paperclip_chtop.dir/single_polyA_window_metagenes.load")
+def load_single_polyA_metagenes(infiles, outfile):
+
+    P.concatenateAndLoad(infiles,
+                          outfile,
+                          regex_filename=".+/(.+).single_polyA_metagene.tsv")
+
+
+@subdivide(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           formatter(),
+           add_inputs(download_paperclip),
+           ["paperclip_chtop.dir/apa_5prime.gtf.gz",
+            "paperclip_chtop.dir/apa_3prime.gtf.gz"])
+def get_apa_windows(infiles, outfiles):
+
+    gtffile, bedfile = infiles
+    out_5prime, out_3prime = outfiles
+
+    PipelineProj028.get_alternate_polyAs(gtffile, bedfile,
+                                         out_5prime, out_3prime)
+
+
+@product([os.path.join(PARAMS["iclip_dir"],
+                         "deduped.dir/*union.bam"),
+            merge_cpsf_wigs],
+         formatter(".+/(?P<TRACK>.+).union.(?P<ftype>.+)"),
+         get_apa_windows,
+         formatter(".+/apa_(?P<PA>.+).gtf.gz"),
+         "paperclip_chtop.dir/{TRACK[0][0]}.apa_{PA[1][0]}_normed.tsv",
+         "{ftype[0][0]}")
+def get_normed_metagene_over_apa_windows(infiles, outfile, informat):
+
+    job_options = "-l mem_free=15G"
+    bamfile, gtffile = infiles
+
+    if informat == "bam":
+        instat = bamfile
+    elif informat == "bw":
+        instat = "--plus-wig=%s" % bamfile
+        
+    statement = '''python %(project_src)s/iCLIPlib/scripts/iCLIP_bam2geneprofile.py
+                           -I %(gtffile)s
+                           %(instat)s
+                           --flanks=0
+                           -S %(outfile)s
+                           -b 30
+                           -L %(outfile)s.log'''
+    P.run()
+
+    
+@product([os.path.join(PARAMS["iclip_dir"],
+                         "deduped.dir/*union.bam"),
+            merge_cpsf_wigs],
+         formatter(".+/(?P<TRACK>.+).union.(?P<ftype>.+)"),
+         get_apa_windows,
+         formatter(".+/apa_(?P<PA>.+).gtf.gz"),
+         "paperclip_chtop.dir/{TRACK[0][0]}.apa_{PA[1][0]}_unnormed.tsv",
+         "{ftype[0][0]}")
+def get_unnormed_metagene_over_apa_windows(infiles, outfile, informat):
+
+    job_options = "-l mem_free=15G"
+    bamfile, gtffile = infiles
+
+    if informat == "bam":
+        instat = bamfile
+    elif informat == "bw":
+        instat = "--plus-wig=%s" % bamfile
+        
+    statement = '''python %(project_src)s/iCLIPlib/scripts/iCLIP_bam2geneprofile.py
+                           -I %(gtffile)s
+                           %(instat)s
+                           --flanks=0
+                           -S %(outfile)s
+                           -b 30
+                           --no-gene-norm
+                           -L %(outfile)s.log'''
+    P.run()
+
+    
+@merge([get_normed_metagene_over_apa_windows,
+        get_unnormed_metagene_over_apa_windows],
+         "apa_metagenes.load")
+def load_apa_metagenes(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+).apa_(.+)_(normed|unnormed).tsv",
+                         cat="track,pA,normed",
+                         options="-i track -i pA -i normed")
+
+
+
+@follows(load_apa_metagenes)
+def paperclip():
+    pass
+
+@transform(merge_cpsf_wigs,
+           suffix(".bw"),
+           ".clusters.bedGraph.gz")
+def get_cpsf_clusters(infile, outfile):
+    '''Use randomisation based cluster calling to find cpsf clusters'''
+
+    tmpfile = P.getTempFilename()
+    statement = '''bigWigToBedGraph %(infile)s %(tmpfile)s;
+
+                   checkpoint;
+ 
+                   bedtools merge -i %(tmpfile)s -d 10 -c 4 -o sum
+                 | bgzip > %(outfile)s;
+
+
+                 checkpoint;
+
+                 tabix -p bed %(outfile)s;
+
+                 checkpoint;
+
+                 rm %(tmpfile)s '''
+
+    P.run()
+
+@follows(mkdir("paperclip_chtop.dir"))
+@transform( merge_adjacent_clusters,
+            regex(".+/(.+)merged_clusters.bed.gz"),
+            add_inputs(merge_cpsf_wigs,
+                       os.path.join(
+                           PARAMS["annotations_dir"],
+                           PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+            r"paperclip_chtop.dir/\1.cpsf_around_clusters.tsv")
+def get_cpsf_metagenes_around_clusters(infiles, outfile):
+    '''Get CPSF metagenes around clusters. Only works with 
+    last exons of transcripts, and doesn't bother to look outside
+    those'''
+
+    clusters, to_profile, gtf = infiles
+    
+    PipelineProj028.get_profile_around_clusters(
+        clusters,
+        to_profile,
+        gtf,
+        outfile,
+        submit=True)
+
+@follows(mkdir("paperclip_chtop.dir"))
+@transform( merge_adjacent_clusters,
+            regex(".+/(.+).merged_clusters.bed.gz"),
+            add_inputs(merge_cpsf_wigs,
+                       os.path.join(
+                           PARAMS["annotations_dir"],
+                           PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+             PARAMS["external_chtop_apa_db"]),
+            r"paperclip_chtop.dir/\1.cpsf_around_apa_clusters.tsv")
+def get_cpsf_metagenes_around_apa_clusters(infiles, outfile):
+    '''Get CPSF metagenes around clusters. Only works with 
+    last exons of transcripts, and doesn't bother to look outside
+    those'''
+
+    clusters, to_profile, gtf, apa_db = infiles
+    
+    apa_transcripts = DUtils.fetch_DataFrame(
+        '''SELECT transcript_id from dapars
+           WHERE PDUI_Group_diff < -0.25 AND
+                 adjusted_P_Val < 0.05''',
+        connect())
+
+    use_transcripts = list(apa_transcripts.transcript_id)
+    PipelineProj028.get_profile_around_clusters(
+        clusters,
+        to_profile,
+        gtf,
+        outfile,
+        use_transcripts=use_transcripts,
+        submit=True)
+
+    
+@follows(mkdir("paperclip_chtop.dir"))
+@transform(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*union.bam"),
+           regex(".+/(.+.union).bam"),
+           add_inputs(merge_cpsf_wigs,
+                      os.path.join(
+                          PARAMS["annotations_dir"],
+                          PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           r"paperclip_chtop.dir/\1.cpsf_around_sites.tsv")
+def get_cpsf_metagenes_around_clipsites(infiles, outfile):
+    '''Get CPSF metagenes around sites. Only works with 
+    last exons of transcripts, and doesn't bother to look outside
+    those'''
+
+    clusters, to_profile, gtf = infiles
+    
+    PipelineProj028.get_profile_around_clipsites(
+        clusters,
+        to_profile,
+        gtf,
+        outfile,
+        submit=True)
+
+    
+
+@follows(mkdir("paperclip_chtop.dir"))
+@transform(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*union.bam"),
+           regex(".+/(.+.union).bam"),
+           add_inputs(merge_cpsf_wigs,
+                      os.path.join(
+                          PARAMS["annotations_dir"],
+                          PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+                      PARAMS["external_chtop_apa_db"]),
+           r"paperclip_chtop.dir/\1.cpsf_around_apa_sites.tsv")
+def get_cpsf_metagenes_around_clipsites_in_apa(infiles, outfile):
+    '''Get CPSF metagenes around sites. Only works with 
+    last exons of transcripts, and doesn't bother to look outside
+    those'''
+
+    clusters, to_profile, gtf, apa_db = infiles
+
+    apa_transcripts = DUtils.fetch_DataFrame(
+        '''SELECT transcript_id from dapars
+           WHERE PDUI_Group_diff < -0.25 AND
+                 adjusted_P_Val < 0.05''',
+        connect())
+
+    use_transcripts = list(apa_transcripts.transcript_id)
+    
+    PipelineProj028.get_profile_around_clipsites(
+        clusters,
+        to_profile,
+        gtf,
+        outfile,
+        use_transcripts=use_transcripts,
+        submit=True)
+
+
+
+
+@transform(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*union.bam"),
+           regex(".+/(.+.union).bam"),
+           add_inputs(merge_cpsf_wigs,
+                      os.path.join(
+                          PARAMS["annotations_dir"],
+                          PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           r"paperclip_chtop.dir/\1.cpsf_around_sites_normed.tsv")
+def get_normed_cpsf_metagenes_around_clipsites(infiles, outfile):
+    '''Get CPSF metagenes around sites. Only works with 
+    last exons of transcripts, and doesn't bother to look outside
+    those'''
+
+    clusters, to_profile, gtf = infiles
+    
+    PipelineProj028.get_profile_around_clipsites(
+        clusters,
+        to_profile,
+        gtf,
+        outfile,
+        norm=True,
+        submit=True)
+
+
+@follows(mkdir("paperclip_chtop.dir"))
+@transform(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*union.bam"),
+           regex(".+/(.+.union).bam"),
+           add_inputs(merge_cpsf_wigs,
+                      os.path.join(
+                          PARAMS["annotations_dir"],
+                          PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+                      PARAMS["external_chtop_apa_db"]),
+           r"paperclip_chtop.dir/\1.cpsf_around_apa_sites_normed.tsv")
+def get_normed_cpsf_metagenes_around_clipsites_in_apa(infiles, outfile):
+    '''Get CPSF metagenes around sites. Only works with 
+    last exons of transcripts, and doesn't bother to look outside
+    those'''
+
+    clusters, to_profile, gtf, apa_db = infiles
+
+    apa_transcripts = DUtils.fetch_DataFrame(
+        '''SELECT transcript_id from dapars
+           WHERE PDUI_Group_diff < -0.25 AND
+                 adjusted_P_Val < 0.05''',
+        connect())
+
+    use_transcripts = list(apa_transcripts.transcript_id)
+    
+    PipelineProj028.get_profile_around_clipsites(
+        clusters,
+        to_profile,
+        gtf,
+        outfile,
+        use_transcripts=use_transcripts,
+        norm=True,
+        submit=True)
+
+
+
+@follows(mkdir("paperclip_chtop.dir"))
+@transform( merge_adjacent_clusters,
+            regex(".+/(.+)merged_clusters.bed.gz"),
+            add_inputs(merge_cpsf_wigs,
+                       os.path.join(
+                           PARAMS["annotations_dir"],
+                           PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+            r"paperclip_chtop.dir/\1.cpsf_around_clusters_normed.tsv")
+def get_cpsf_metagenes_around_clusters_normed(infiles, outfile):
+    '''Get CPSF metagenes around clusters. Only works with 
+    last exons of transcripts, and doesn't bother to look outside
+    those'''
+
+    clusters, to_profile, gtf = infiles
+    
+    PipelineProj028.get_profile_around_clusters(
+        clusters,
+        to_profile,
+        gtf,
+        outfile,
+        norm=True,
+        submit=True)
+
+    
+@follows(mkdir("paperclip_chtop.dir"))
+@transform( merge_adjacent_clusters,
+            regex(".+/(.+).merged_clusters.bed.gz"),
+            add_inputs(merge_cpsf_wigs,
+                       os.path.join(
+                           PARAMS["annotations_dir"],
+                           PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+             PARAMS["external_chtop_apa_db"]),
+            r"paperclip_chtop.dir/\1.cpsf_around_apa_clusters_normed.tsv")
+def get_cpsf_metagenes_around_apa_clusters_normed(infiles, outfile):
+    '''Get CPSF metagenes around clusters. Only works with 
+    last exons of transcripts, and doesn't bother to look outside
+    those'''
+
+    clusters, to_profile, gtf, apa_db = infiles
+    
+    apa_transcripts = DUtils.fetch_DataFrame(
+        '''SELECT transcript_id from dapars
+           WHERE PDUI_Group_diff < -0.25 AND
+                 adjusted_P_Val < 0.05''',
+        connect())
+
+    use_transcripts = list(apa_transcripts.transcript_id)
+    PipelineProj028.get_profile_around_clusters(
+        clusters,
+        to_profile,
+        gtf,
+        outfile,
+        use_transcripts=use_transcripts,
+        norm=True,
+        submit=True)
+
+
+@follows(mkdir("paperclip_chtop.dir"))
+@transform( merge_adjacent_clusters,
+            regex(".+/(.+union).merged_clusters.bed.gz"),
+            add_inputs(merge_cpsf_wigs,
+                       os.path.join(
+                           PARAMS["annotations_dir"],
+                           PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+            r"paperclip_chtop.dir/\1.cpsf_around_clusters_normed_rand.tsv")
+def get_cpsf_rand_metagenes_around_clusters_normed(infiles, outfile):
+    '''Get CPSF metagenes around clusters. Only works with 
+    last exons of transcripts, and doesn't bother to look outside
+    those'''
+
+    clusters, to_profile, gtf = infiles
+    
+    PipelineProj028.get_profile_around_clusters(
+        clusters,
+        to_profile,
+        gtf,
+        outfile,
+        norm=True,
+        rands=100,
+        submit=True)
+
+    
+@collate([get_cpsf_metagenes_around_clusters,
+          get_cpsf_metagenes_around_apa_clusters,
+          get_cpsf_metagenes_around_clipsites,
+          get_cpsf_metagenes_around_clipsites_in_apa,
+          get_normed_cpsf_metagenes_around_clipsites,
+          get_normed_cpsf_metagenes_around_clipsites_in_apa,
+          get_cpsf_metagenes_around_clusters_normed,
+          get_cpsf_metagenes_around_apa_clusters_normed,
+          get_cpsf_rand_metagenes_around_clusters_normed],
+        regex(".+/(.+-FLAG).(R.|union).+cpsf_around_(.+).tsv"),
+        r"paperclip_chtop.dir/cpsf_metagenes_around_\3.load")
+def load_cpsf_metagenes_around_clusters(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+-FLAG).(R.|union).+",
+                         cat="track,replicate")
+
+    
+###################################################################
+@follows(mkdir("chtop_apa.dir"))
+@originate(["chtop_apa.dir/HEK293-Aseq_Cntrl-R1.bed.gz",
+            "chtop_apa.dir/HEK293-Aseq_siCPSF6-R1.bed.gz",
+            "chtop_apa.dir/HEK293-Aseq_nosi-R1.bed.gz",
+            "chtop_apa.dir/HEK293-Aseq_CSTF64-R1.bed.gz"])
+def get_Aseq_data(outfile):
+    '''Download Aseq data from GSE37401'''
+
+    addresses = {"HEK293-Aseq_Cntrl-R1.bed.gz":
+                 "ftp://ftp.ncbi.nlm.nih.gov/geo/samples/GSM909nnn/GSM909243/suppl/GSM909243%5F179%2Ebed%2Egz",
+                 "HEK293-Aseq_siCPSF6-R1.bed.gz":
+                 "ftp://ftp.ncbi.nlm.nih.gov/geo/samples/GSM909nnn/GSM909245/suppl/GSM909245%5F183%2Ebed%2Egz",
+                 "HEK293-Aseq_nosi-R1.bed.gz":
+                 "ftp://ftp.ncbi.nlm.nih.gov/geo/samples/GSM909nnn/GSM909242/suppl/GSM909242%5F178%2Ebed%2Egz",
+                 "HEK293-Aseq_CSTF64-R1.bed.gz":
+                 "ftp://ftp.ncbi.nlm.nih.gov/geo/samples/GSM909nnn/GSM909244/suppl/GSM909244%5F181%2Ebed%2Egz"}
+
+    infile = addresses[os.path.basename(outfile)]
+
+    statement = '''wget %(infile)s -O %(outfile)s'''
+
+    P.run()
+
+
+@transform(get_Aseq_data,
+           suffix(".bed.gz"),
+           ".tpm.bed.gz")
+def convert_aseq_to_tpm(infile, outfile):
+
+    PipelineProj028.bed_score_to_TPM(infile, outfile)
+
+
+@merge(get_Aseq_data,
+       "aseq_clusters.bed.gz")
+def merge_aseq_to_clusters(infiles, outfile):
+
+    infiles = " ".join(infiles)
+    statement = '''zcat %(infiles)s
+                 | sort -k1,1 -k2,2n
+                 | bedtools merge -i - -c 4,5,6 -o first,sum,first -d 10
+                 | gzip > %(outfile)s'''
+    P.run()
+
+@merge([convert_aseq_to_tpm, merge_aseq_to_clusters],
+       "chtop_apa.dir/aseq_clusters.filtered.bed.gz")
+def quantify_and_filter_clusters(infiles, outfile):
+
+    PipelineProj028.quantify_and_filter_clusters(infiles[-1],
+                                                 infiles[:-1],
+                                                 outfile)
+    
+@transform( quantify_and_filter_clusters,
+           suffix(".filtered.bed.gz"),
+           add_inputs(os.path.join(PARAMS["annotations_dir"],
+                                   PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           ".prox_distil.tsv")
+def get_Aseq_ratios(infiles, outfile):
+    ''' Find the ratio of proximal to distil usage for transcripts'''
+
+    bedfile, gffile = infiles
+    
+    PipelineProj028.get_alternate_polyA_distil_usage(gffile, bedfile,
+                                                      outfile)
+
+
+@transform(get_Aseq_ratios,
+           suffix(".tsv"),
+           ".load")
+def load_aseq_ratio(infile, outfile):
+
+    P.load(infile, outfile, options = "-i gene_id -i transcript_id")
+
+
+@transform(getTranscriptChunks,
+           suffix(".gtf.gz"),
+           add_inputs(PARAMS["external_chtop_apa_db"]),
+           ".chtop_apa.tsv")
+def annotate_chtop_apa_chunks(infiles, outfile):
+
+    chunks = infiles[0]
+    table = DUtils.fetch_DataFrame('''SELECT chrom as chr,
+                                             Predicted_Proximal_APA as position
+                                      FROM chtop_apa.dapars
+                                      WHERE adjusted_P_Val < 0.05
+                                       AND PDUI_Group_diff < -0.1''',
+                                   connect())
+    PipelineProj028.get_apa_chunks(table, chunks, outfile)
+
+
+@transform(annotate_chtop_apa_chunks,
+           suffix(".tsv"),
+           ".load")
+def load_chtop_apa_chunks(infile, outfile):
+
+    P.load(infile, outfile, options = "-i gene_id -i exon_id")
+
+    connect().executescript('''DROP INDEX IF EXISTS chtop_apa_joint;
+                               CREATE INDEX chtop_apa_joint 
+                                ON reference_chunks_chtop_apa(gene_id, exon_id)''')
 
 
 ###################################################################
@@ -4272,6 +5123,59 @@ def generateChTopTrackDb(infiles, outfile):
                                   "RNASeq data from ChTop known experiments",
                                   outfile)
 
+@transform(PARAMS["dir_chtop_rnai_bams"],
+           regex(".+/([^\.]+)\..+\.bam"),
+           r"export/hg19/\1.bigWig")
+def our_chtop_rnaseq_to_bigwig(infile, outfile):
+
+    PipelineProj028.bamToBigWig(infile, outfile)
+
+@merge(our_chtop_rnaseq_to_bigwig,
+       "export/hg19/out_chtop_trackDb.txt")
+def generate_our_chtop_rnaseq_trackDb(infiles, outfile):
+
+    PipelineProj028.bigWigTrackDB(infiles,
+                                  "Our RNASeq from ChTop knockdown track %(track_name)s",
+                                  "Our_Chtop",
+                                  "Our RNAseq from ChTop knockdown",
+                                  outfile)
+    
+
+
+@transform(get_Aseq_data,
+           regex(".+/(HEK293-Aseq_(?:Cntrl|siCPSF6)-R.).bed.gz"),
+           r"export/hg19/\1.bigWig")
+def get_CPSF6_Aseq_bigWig(infile, outfile):
+
+    tmpfile = P.getTempFilename()
+    genome_file = os.path.join(PARAMS["annotations_dir"],
+                               PARAMS_ANNOTATIONS["interface_contigs_tsv"])
+    
+    statement = '''zcat %(infile)s
+                 | sort -k1,1 -k2,2n
+                 | bedtools merge -i - -c 5 -o sum -d -1
+                 > %(tmpfile)s;
+
+                 checkpoint;
+
+                 bedGraphToBigWig %(tmpfile)s %(genome_file)s %(outfile)s;
+
+                 checkpoint;
+
+                 rm %(tmpfile)s'''
+
+    P.run()
+
+
+@merge(get_CPSF6_Aseq_bigWig,
+       "export/hg19/CPSF6_RNAi_Aseq_trackDb.txt")
+def generate_CPSF6_RNAi_Aseq_trackDb(infiles, outfile):
+
+    PipelineProj028.bigWigTrackDB(infiles,
+                                  "Aseq from Martin et al, track %(track_name)s",
+                                  "CFSP6_Aseq",
+                                  "Aseq from Martin et al",
+                                  outfile)
 
 ###################################################################
 @transform(os.path.join(PARAMS["dir_external"], "Fu_RNAseq/*.bed.gz"),
@@ -4291,6 +5195,7 @@ def liftOverFuRNASeq(infile, outfile):
 
     P.run()
 
+    
 
 ###################################################################
 @transform([liftOverFuRNASeq,
@@ -4327,7 +5232,9 @@ def generateFuTrackDb(infiles, outfile):
         maketRNAClusterUCSC,
         generateStubbsTrackDb,
         generateFuTrackDb,
-        generateChTopTrackDb],
+        generateChTopTrackDb,
+        generate_our_chtop_rnaseq_trackDb,
+        generate_CPSF6_RNAi_Aseq_trackDb],
        "export/hg19/trackDb.txt")
 def mergeTrackDbs(infiles, outfile):
     
@@ -4384,6 +5291,8 @@ def makeHubFiles(outfiles):
          makeHubFiles)
 def export():
     pass
+
+
 
 
 ###################################################################

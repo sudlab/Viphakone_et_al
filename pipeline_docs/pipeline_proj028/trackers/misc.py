@@ -1,12 +1,15 @@
 from ProjectTracker import *
-from Sample_QC import ContextStats
+#from Sample_QC import ContextStats
 
 class CustomisedContextStats(ProjectTracker):
 
+    table = "iclip.deduped_context_stats"
+    tag = "FLAG"
+    
     def getPaths(self):
-        tracks = self.getValues("SELECT DISTINCT track from iclip.deduped_context_stats")
+        tracks = self.getValues("SELECT DISTINCT track from %(table)s")
 
-        paths = [re.match("(.+)-FLAG-(.+)",x).groups() for x in tracks]
+        paths = [re.match("(.+-.+)[-\.](.+)",x).groups() for x in tracks]
         paths = zip(*paths)
 
         return paths
@@ -32,10 +35,11 @@ class CustomisedContextStats(ProjectTracker):
 
     def __call__(self, track, slice=None):
 
-       # categories = "','".join(self.categories)
+        # categories = "','".join(self.categories)
+        
         statement = ''' SELECT category, alignments
-                      FROM deduped_context_stats
-                      WHERE track = '%(track)s-FLAG-%(slice)s' AND category != 'total' '''
+                      FROM %(table)s
+                      WHERE track = '%(track)s-%(tag)s-%(slice)s' AND category != 'total' '''
 
         results = self.getDataFrame(statement)
         results.category = [self.categories[x] if x in self.categories else "Other"
@@ -44,24 +48,31 @@ class CustomisedContextStats(ProjectTracker):
                             
         return results
 
-class NoFlipInContext(ProjectTracker, ContextStats):
+#class NoFlipInContext(ProjectTracker, ContextStats):
 
-    method="no_flipin"
+#    method="no_flipin"
 
 
+class EJCContext(CustomisedContextStats):
+
+    table = "ejc.deduped_context_stats"
+    tag="GFP"
+    
 class GeneProfiles3(ProjectTracker):
 
+    table = "iclip.gene_profiles"
+    
     def getSlices(self):
 
-        return self.getValues("SELECT DISTINCT rep FROM gene_profiles")
+        return self.getValues("SELECT DISTINCT rep FROM %(table)s")
 
     def getTracks(self):
-        return self.getValues("SELECT DISTINCT factor FROM gene_profiles")
+        return self.getValues("SELECT DISTINCT factor FROM %(table)s")
 
     def __call__(self, track, slice):
 
         statement = '''SELECT bin, area, region
-                       FROM gene_profiles
+                       FROM %(table)s
                        WHERE rep='%(slice)s' AND factor='%(track)s' AND
                        region != "introns" '''
 
@@ -144,7 +155,11 @@ class NormedEclipProfiles(ProjectTracker):
         return df
 
 
+class EJCGeneProfiles(GeneProfiles3):
 
+    table = "ejc.gene_profiles"
+
+    
 class GeneFractions(ProjectTracker):
 
     def getTracks(self):

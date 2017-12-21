@@ -3,6 +3,8 @@ from ProjectTracker import ProjectTracker
 import numpy as np
 import pandas as pd
 import CGAT.IOTools as IOTools
+import iCLIP.random
+import re
 
 class NormalizedUTRMatrix(TrackerDataframes):
     ''' Read in normalized profile matricies as dataframes for plotting'''
@@ -182,3 +184,154 @@ class FirstLastExonCount(ProjectTracker):
 
 
 
+class FirstLastExonBoot(ProjectTracker):
+
+    data = None
+    
+    statement = '''SELECT DISTINCT cc.gene_id, cc.exon_id,
+                                   %(columns)s,
+                                   first,
+                                   last,
+                                   exon,
+                                   intron
+                     FROM chunk_counts as cc
+                      INNER JOIN reference_chunks_gene_first_pc_exons as fe
+                       ON fe.gene_id = cc.gene_id AND
+                          fe.exon_id = cc.exon_id
+                      INNER JOIN reference_chunks_gene_last_pc_exons as le
+                       ON le.gene_id = cc.gene_id AND
+                          le.exon_id = cc.exon_id 
+                      INNER JOIN reference_chunks_constitive_exons as ce
+                       ON ce.gene_id = cc.gene_id AND
+                          ce.exon_id = cc.exon_id
+                      INNER JOIN reference_chunks_introns as ie
+                       ON ie.gene_id = cc.gene_id AND
+                          ie.exon_id = cc.exon_id
+                      INNER JOIN reference_chunks_ngenes as ng
+                       ON ng.gene_id = cc.gene_id AND
+                          ng.exon_id = cc.exon_id
+                      WHERE ng.ngenes == 1
+                     '''
+
+    track_pattern = "(.+_(?:FLAG|GFP))_union"
+    
+    def track2control(self, track):
+        return "FlipIn_" + re.match(".+_(.+_[Ru].+)", self.track2col[track]).groups()[0]
+    
+    def grouping(self, row):
+        if row["intron"]==1 and row["exon"]==0:
+            return "intron"
+        elif row["first"]>=1 :
+            return "first"
+        elif row["last"]>=1 :
+            return "last"
+        elif  row["intron"]==0:
+            return "CDS"
+        else:
+            return None
+    
+
+    def getTracks(self):
+
+        cols = self.getColumns("chunk_counts")
+        cols = [track for track in cols if re.search(self.track_pattern, track)]
+        tracks = [re.search(self.track_pattern, track).groups()[0]
+                  if len(re.search(self.track_pattern, track).groups()) > 0
+                  else track
+                  for track in cols]
+                  
+        self.track2col = {track: col for track, col in zip(tracks, cols)}
+
+        return tracks
+    
+    def fill(self):
+
+        print "filling data...",
+        self.getTracks()
+        
+        columns = self.track2col.values()
+        
+        columns = ",".join(columns)
+        
+        self.data = self.getDataFrame(self.statement)
+        print self.statement % locals()
+        self.data["grouping"] = self.data.apply(self.grouping, axis=1)
+        self.data = self.data[self.data.grouping.notnull()]
+        print "done"
+        
+    def __call__(self, track):
+
+        if self.data is None:
+            self.fill()
+            
+        test = self.track2col[track]
+        control = self.track2control(track)
+        return self.data.groupby("grouping").apply(lambda x: iCLIP.random.ratio_and_ci(x[test], x[control]))
+        
+
+class DetainedBoot(FirstLastExonBoot):
+
+    statement = '''SELECT DISTINCT cc.gene_id, cc.exon_id,
+                                   %(columns)s,
+                                   retained,
+                                   exon,
+                                   intron,
+                                   sig
+                     FROM chunk_counts as cc
+                      LEFT JOIN detained_intron_calls di
+                       ON di.gene_id = cc.gene_id AND
+                          di.intron_id = cc.exon_id
+                      INNER JOIN reference_chunks_retained_introns as ri
+                       ON  ri.gene_id = cc.gene_id AND
+                           ri.exon_id = cc.exon_id
+                       INNER JOIN reference_chunks_constitive_exons as ce
+                       ON ce.gene_id = cc.gene_id AND
+                          ce.exon_id = cc.exon_id
+                      INNER JOIN reference_chunks_introns as ie
+                       ON ie.gene_id = cc.gene_id AND
+                          ie.exon_id = cc.exon_id
+                      INNER JOIN reference_chunks_ngenes as ng
+                       ON ng.gene_id = cc.gene_id AND
+                          ng.exon_id = cc.exon_id
+                      WHERE ng.ngenes == 1
+                     '''
+
+    def grouping(self, row):
+
+        if row["sig"] == 'TRUE':
+            return "Detained"
+        elif row["retained"]==1:
+            return "Retained"
+        elif row["intron"]==1 and row["exon"]==0:
+            return "Intron"
+        elif  row["intron"] == 0:
+            return "Exon"
+        else:
+            return None
+
+class ChTopAPABoot(FirstLastExonBoot):
+
+     statement = '''SELECT DISTINCT cc.gene_id, cc.exon_id,
+                                   %(columns)s,
+                                   apa_site
+                     FROM chunk_counts as cc
+                      LEFT JOIN reference_chunks_gene_last_pc_exons as le
+                       ON le.gene_id = cc.gene_id AND
+                          le.exon_id = cc.exon_id
+                      INNER JOIN reference_chunks_chtop_apa as ca
+                       ON  ca.gene_id = cc.gene_id AND
+                           ca.exon_id = cc.exon_id
+                      INNER JOIN reference_chunks_ngenes as ng
+                       ON ng.gene_id = cc.gene_id AND
+                          ng.exon_id = cc.exon_id
+                      WHERE ng.ngenes == 1 AND
+                       le.last > 0
+                     '''
+
+     def grouping(self, row):
+
+         if row["apa_site"] == 1:
+             return "APA"
+         else:
+             return "No APA"
+         

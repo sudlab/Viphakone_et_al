@@ -37,3 +37,42 @@ First exons
    :statement: aes(index,density,col=track) + geom_line() + facet_wrap(~track)
 
    Meta genes at boundaries of first exons.
+
+Boundary profiels with eIF4A3
+------------------------------
+
+.. report:: GeneProfiles.ExonBoundaryProfilesWith4A3
+   :render: r-ggplot
+   :groupby: all
+   :tracks: Alyref-FLAG,Chtop-FLAG,Nxf1-FLAG,FlipIn-FLAG
+   :slices: union
+   :statement: aes(x=position, y=density, fill=relevel(factor, ref="eIF4A3-GFP"), col=relevel(factor, ref="eIF4A3-GFP")) + geom_area(alpha=0.5, position="identity") + geom_line() + facet_wrap(~track, scale="free_y") + theme_bw() + scale_fill_discrete(name="Protein") + guides(color=FALSE)
+
+   Metagene profiles at exon boundarys with 4A3 superimposed.
+
+
+Boundary profiles using the center of the read
+-----------------------------------------------
+
+.. report:: GeneProfiles.CenteredExonBoundaryProfiles
+   :render: r-ggplot
+   :groupby: all
+   :tracks: Alyref-FLAG,Chtop-FLAG,Nxf1-FLAG,FlipIn-FLAG
+   :slices: union
+   :statement: aes(x=position, y=density, col=factor, fill=factor) + geom_area(alpha=0.5, position="identity") + facet_wrap(~track, scale="free_y") + theme_bw() + scale_fill_discrete(name="Protein") + guides(color=FALSE)
+
+   Metagene profiles at exon boundarys with 4A3 and XL sites at center of read
+
+
+Transcriptome mapped profiles with 4A3
+---------------------------------------
+
+
+.. report:: GeneProfiles.TranscriptomeExonBoundaryProfilesWith4A3
+   :render: r-ggplot
+   :groupby: all
+   :tracks: Alyref-FLAG,Chtop-FLAG,Nxf1-FLAG,FlipIn-FLAG
+   :slices: union
+   :statement: aes(x=position, y=density, fill=relevel(factor, ref="eIF4A3-GFP"), col=relevel(factor, ref="eIF4A3-GFP")) + geom_area(alpha=0.5, position="identity") + geom_line() + facet_wrap(~track, scale="free_y") + theme_bw() + scale_fill_discrete(name="Protein") + guides(color=FALSE)	     
+	     
+   As above but mapped to transcriptome.

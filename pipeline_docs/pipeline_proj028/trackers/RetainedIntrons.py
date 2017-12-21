@@ -1,5 +1,5 @@
 from ProjectTracker import *
-
+from scipy.stats import hypergeom
 #import CGATReport.Tracker.TrackerMultipleLists as TrackerMultipleLists
 
 
@@ -154,3 +154,156 @@ class DifferntialIntronsVsCellFraction(ProjectTracker):
         result = result.dropna()
         result["exon_sig"] = ((result.exon_padj < 0.05) & (abs(result.exon_lfc) > 0.58)) * (result.exon_lfc/result.exon_lfc.abs())
         return result
+
+class ChunkSplicing(ProjectTracker):
+
+    tracks = [" ", "not"]
+
+    slices = ["nuclear", "cytoplasmic", "total", "chtop"]
+
+    def __call__(self, track, slice):
+
+        if slice=="chtop":
+            comp="Chtop"
+        else:
+            comp="Alyref"
+            
+        statement = ''' SELECT DISTINCT gene_name as symbol,
+                               genomicData_seqnames as contig,
+                               genomicData_start as intron_start,
+                               genomicData_end as intron_end,
+                               genomicData_width,
+                               featureID, groupID,
+                               padj,
+                               log2Fold_%(comp)s_Control as l2fold,
+                               Alyref_FLAG_union as clip_tags
+                        FROM chunk_counts
+                          INNER JOIN chunk_splicing as dex
+                          ON dex.groupID = chunk_counts.gene_id AND
+                             dex.featureID = chunk_counts.exon_id
+                          INNER JOIN annotations.gene_info as gi
+                          ON gi.gene_id = dex.groupID
+                        WHERE dex.track = '%(slice)s' AND
+                              genomicData_width >= 10 '''
+
+        results = self.getDataFrame(statement)
+        
+        if track=="combined":
+            track = "retained or detained"
+        detained_calls = self.getDataFrame('''SELECT * FROM detained_intron_calls ''')
+
+        detained_calls["detained"] = (detained_calls.padj < 0.01) & (detained_calls.log2FoldChange > 2)
+        detained_calls = detained_calls.groupby(["gene_id", "intron_id"]).detained.max()
+        retained_calls = self.getDataFrame('''SELECT * FROM reference_chunks_retained_introns''')
+        detained_calls = retained_calls.join(detained_calls, on=["gene_id", "exon_id"], how="left")
+        detained_calls.detained = detained_calls.detained.fillna(False)
+        detained_calls.retained = detained_calls.retained > 0
+        detained_calls = detained_calls.query("%s (%s)" % (track, self.intron_set), engine="python")
+        detained_calls.set_index(["gene_id", "exon_id"], inplace=True)
+        results = results.join(detained_calls, on=["groupID", "featureID"], how="inner")
+        results.l2fold = results.l2fold.astype("float64")
+        results.to_csv("%s_%s.csv" %(track, slice), sep="\t")
+        return results
+        
+
+class DetainedChunkSplicing(ChunkSplicing):
+
+    intron_set="detained"
+
+
+class RetainedChunkSplicing(ChunkSplicing):
+
+    intron_set="retained"
+
+
+class CombinedChunkSplicing(ChunkSplicing):
+
+    intron_set="detained or retained"
+
+
+class ChunkEnrichment(ChunkSplicing):
+
+    tracks = ["all"]
+    
+    def __call__(self, track, slice):
+
+        diff = ChunkSplicing.__call__(self, " ", slice)
+        notdiff = ChunkSplicing.__call__(self, "not", slice)
+
+        results = pandas.concat([diff, notdiff], keys=["tained", "notained"], names=["intron"]).reset_index()
+                                
+        results["clip_bin"] = pandas.cut(pandas.np.log2((results["clip_tags"]/results["genomicData_width"]) + 1e-5), bins=20,
+                                         labels=False)
+
+        def _frac(x):
+            sig = sum(pandas.notnull(x["padj"]) & (x["padj"] < 0.01) & (x["l2fold"] < -0.58))
+            total = x.shape[0]
+            return pandas.Series([sig,total], index=["sig","total"])
+        
+        fractions = results.groupby(["clip_bin", "intron"]).apply(_frac)
+        fractions = fractions.reset_index()
+
+        def _enrich(x):
+
+            x = x.set_index("intron")
+
+
+            try:
+                N = x.loc["tained"]["total"]
+                k = x.loc["tained"]["sig"]
+            except KeyError:
+                N = 0
+                k = 0
+                
+            M = N + x.loc["notained"]["total"]
+            n = k + x.loc["notained"]["sig"]
+           
+
+            p = hypergeom.sf(k-1, M, n, N)
+
+            try:
+                enrich = (float(k)/N)/(float(n)/M)
+            except ZeroDivisionError:
+                enrich = pandas.np.nan
+            except KeyError:
+                enrich = 0
+                
+            return pandas.Series([enrich, p], index=["enrichment", "p"])
+            
+
+        enrichment = fractions.groupby("clip_bin").apply(_enrich)
+
+        enrichment = enrichment.reset_index()
+
+        enrichment = enrichment.sort_values("clip_bin")
+        
+        return enrichment
+
+    
+class DetainedEnrichment(ChunkEnrichment):
+
+    intron_set="detained"
+
+       
+class RetainedEnrichment(ChunkEnrichment):
+
+    intron_set="retained"
+
+class CombinedEnrichment(ChunkEnrichment):
+
+    intron_set="detained or retained"
+
+
+class CountDiffChunks(ProjectTracker):
+
+    slices  = ["> 0.58", "< -0.58"]
+    tracks = ["nuclear", "cytoplasmic", "total"]
+
+    def __call__(self, track, slice):
+        statement = ''' SELECT COUNT (DISTINCT groupID) as genes
+                    FROM
+                    chunk_splicing
+                    WHERE padj < 0.05 AND log2fold_Alyref_Control %(slice)s
+                          AND track='%(track)s' '''
+
+        return self.getValue(statement % locals())
