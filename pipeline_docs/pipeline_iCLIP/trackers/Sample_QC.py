@@ -486,6 +486,7 @@ class ClusterSamplesOnReproducibility(ProjectTracker):
                                "FROM reproducibility_distance")
 
         import rpy2
+        from rpy2.robjects.packages import importr
         ro = rpy2.robjects
         R = rpy2.robjects.r
 
@@ -507,7 +508,7 @@ class ClusterSamplesOnReproducibility(ProjectTracker):
         distfun = R(''' function(x) as.dist(1-x) ''')
 
         R.x11()
-        gplots = ro.packages.importr("gplots")
+        gplots = importr("gplots")
         gplots.heatmap_2(mat, distfun=distfun, trace="none", margins = ro.IntVector([2,10]), labCol="")
  
         return odict((("text", "#$rpl %i$#\n" % R["dev.cur"]()[0]),))

@@ -621,8 +621,9 @@ def createViewMapping(infile, outfile):
     ''' Create tables neccessary for mapping report '''
 
     to_cluster = False
+    pipeline_dir = PARAMS["pipelinedir"]
     statement = '''cd mapping.dir;
-                   nice python %(scriptsdir)s/../../CGATPipelines/CGATPipelines/pipeline_mapping.py
+                   nice python %(pipelinedir)s/pipeline_mapping.py
                    make createViewMapping -v5 -p1 '''
     P.run()
 
@@ -667,7 +668,33 @@ def dedup_alignments(infile, outfile):
 
     P.run()
 
+###################################################################
+@collate(dedup_alignments,
+         regex("(.+\-.+)\-(.+).bam"),
+         r"\1.union.bam")
+def makeUnionBams(infiles, outfile):
+    '''Merge replicates together'''
 
+    outfile = os.path.abspath(outfile)
+
+    if len(infiles) == 1:
+        infile = os.path.abspath(infiles[0])
+        statement = '''ln -sf %(infile)s %(outfile)s;
+                       checkout;
+ 
+                       ln -sf %(infile)s.bai %(outfile)s.bai;'''
+    else:
+
+        statement = ''' samtools merge -f %(outfile)s %(infiles)s;
+                        checkpoint;
+
+                        samtools index %(outfile)s'''
+
+    infiles = " ".join(infiles)
+
+    P.run()
+
+    
 ###################################################################
 @transform([dedup_alignments,indexMergedBAMs], 
            regex("(?:merged_)?(.+).bam(?:.bai)?"),
@@ -885,7 +912,8 @@ def flattenGeneSet(infile, outfile):
 
 
 ###################################################################
-@transform(dedup_alignments, suffix(".bam"),
+@transform([dedup_alignments,
+            makeUnionBams] , suffix(".bam"),
            add_inputs(flattenGeneSet),
            ".splicing_index")
 def calculateSplicingIndex(infiles, outfile):
@@ -1103,30 +1131,6 @@ def loadCounts(infile, outfile):
 ###################################################################
 # Analysis
 ###################################################################
-@collate(dedup_alignments,
-         regex("(.+\-.+)\-(.+).bam"),
-         r"\1.union.bam")
-def makeUnionBams(infiles, outfile):
-    '''Merge replicates together'''
-
-    outfile = os.path.abspath(outfile)
-
-    if len(infiles) == 1:
-        infile = os.path.abspath(infiles[0])
-        statement = '''ln -sf %(infile)s %(outfile)s;
-                       checkout;
- 
-                       ln -sf %(infile)s.bai %(outfile)s.bai;'''
-    else:
-
-        statement = ''' samtools merge -f %(outfile)s %(infiles)s;
-                        checkpoint;
-
-                        samtools index %(outfile)s'''
-
-    infiles = " ".join(infiles)
-
-    P.run()
 
 
 ###################################################################

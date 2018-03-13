@@ -180,8 +180,8 @@ def connect():
 ###################################################################
 ## worker tasks
 ###################################################################
-@transform(os.path.join(PARAMS["iclip_dir"],
-                        "mapping.dir/geneset.dir/reference.gtf.gz"),
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
            suffix(".gtf.gz"),
            ".fasta.gz")
 def getGenesetFasta(infile, outfile):
@@ -460,6 +460,68 @@ def normalizedToRNASeq(infiles, outfiles):
         submit=True,
         logfile=logfile,
         job_memory="25G")
+
+    
+###################################################################
+@transform(os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),
+           formatter(),
+           add_inputs(os.path.join(PARAMS["annotations_dir"],
+                                   PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           r"gene_profiles.dir/{basename[0]}.introns.profile.tsv")
+def get_intron_metagene(infiles, outfile):
+    '''Get a metagene profile over concatenated introns'''
+
+    bamfile, gtffile = infiles
+
+    statement = '''cgat gtf2gtf -I %(gtffile)s
+                                --method=exons2introns
+                                -L %(outfile)s.log
+                 | awk -F'\\t' 'BEGIN{OFS=FS} {$3="exon"; print}'
+                 | python %(project_src)s/iCLIPlib/scripts/iCLIP_bam2geneprofile.py
+                   -f 0
+                   %(bamfile)s
+                   --exon-bins=100
+                   -S %(outfile)s
+                   -L %(outfile)s.log; '''
+
+    P.run()
+    
+###################################################################
+@transform(os.path.join(PARAMS["dir_iclip"], "deduped.dir/*.bam"),
+           formatter(),
+           add_inputs(os.path.join(PARAMS["annotations_dir"],
+                                   PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           r"gene_profiles.dir/{basename[0]}.exons.profile.tsv")
+def get_exon_metagene(infiles, outfile):
+    '''Get a metagene profile over concatenated introns'''
+
+    bamfile, gtffile = infiles
+
+    statement = '''python %(project_src)s/iCLIPlib/scripts/iCLIP_bam2geneprofile.py
+                   -f 500
+                   --scale-flanks
+                   --flank-bins=100
+                   --exon-bins=100
+                   %(bamfile)s
+                   -I %(gtffile)s
+                   -S %(outfile)s
+                   -L %(outfile)s.log; '''
+
+    P.run()
+
+@merge([get_exon_metagene,
+        get_intron_metagene],
+       "gene_profiles.dir/basic_iCLIP_metagenes.load")
+def load_iCLIP_metagenes(infiles, outfile):
+
+    P.concatenateAndLoad(infiles, outfile,
+                         regex_filename=".+/(.+-.+)[-\.](R.|union).(.+).profile.tsv",
+                         cat="pulldown,replicate,interval",
+                         options="-i pulldown -i replicate -i interval")
+
+@follows(load_iCLIP_metagenes)
+def basic_iclip_metagenes():
+    pass
 
 ###################################################################
 @follows(calculateSTOPProfiles,
@@ -973,7 +1035,7 @@ def getNonHistoneSingleExon(infiles, outfile):
                           --invert-filter
                           --map-tsv-file <(cut -f2 %(histones)s |
                                            grep -P '^ENST' )
-                           -I %(models)s
+                           -I <(zcat %(models)s | grep -v 'chrM')
                            -S %(outfile)s
                            -L %(outfile)s.log'''
 
@@ -1950,23 +2012,29 @@ def countChunks(infiles, outfile):
 @transform(getTranscriptChunks,
            suffix(".gtf.gz"),
            add_inputs(os.path.join(PARAMS["annotations_dir"],
-                        PARAMS_ANNOTATIONS["interface_geneset_exons_gtf"])),
+                                   PARAMS_ANNOTATIONS["interface_geneset_exons_gtf"])),
            ".introns.load")
 def annotateIntronChunks(infiles, outfile):
-    '''Find those transcript chunks that represent consituative introns'''
+    '''Find those transcript chunks that introns. Find consituative introns by looking
+    for chunks with intron>=1 and exon==0'''
 
     chunks, transcripts = infiles
 
-    statement = '''bedtools intersect -v -a %(chunks)s -b %(transcripts)s
+    statement = '''  cgat gtf2gtf
+                        -I %(transcripts)s
+                        -L %(outfile)s.log
+                        --method=set-gene-to-transcript
+                 | cgat gtf2gtf
+                        -L %(outfile)s.log
+                        --method=exons2introns
                  | bedtools intersect -a %(chunks)s -b - -c -s
-                 | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
+                 | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+\\t([0-9]+)$/\\1\\t\\2\\t\\3/' 
                  | sed '1i gene_id\\texon_id\\tintron'
                  | %(load_smt)s > %(outfile)s'''
     tablename = P.toTable(outfile)
     load_smt = P.build_load_statement(tablename=tablename,
                                       options = "-i gene_id -i exon_id")
     
-
     P.run()
 
 
@@ -1976,7 +2044,7 @@ def annotateIntronChunks(infiles, outfile):
            add_inputs(os.path.join(PARAMS["annotations_dir"],
                         PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
            ".constitive_exons.load")
-def annotateExonsChunks(infiles, outfile):
+def annotateConstituativeExonsChunks(infiles, outfile):
     '''Find those transcript chunks that represent consituative exons'''
 
     chunks, transcripts = infiles
@@ -1987,16 +2055,38 @@ def annotateExonsChunks(infiles, outfile):
                           --method=intersect-transcripts
                          
                  | bedtools intersect -a %(chunks)s -b - -c -s
-                 | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
+                 | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+\\t([0-9]+)$/\\1\\t\\2\\t\\3/' 
                  | sed '1i gene_id\\texon_id\\texon'
                  | %(load_smt)s > %(outfile)s'''
     tablename = P.toTable(outfile)
     load_smt = P.build_load_statement(tablename=tablename,
                                       options = "-i gene_id -i exon_id")
-    
 
     P.run()
 
+    
+###################################################################
+@transform(getTranscriptChunks,
+           suffix(".gtf.gz"),
+           add_inputs(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           ".exons.load")
+def annotateAnyExonsChunks(infiles, outfile):
+    '''Find those transcript chunks that represent consituative exons'''
+
+    chunks, transcripts = infiles
+
+    statement = '''zcat %(transcripts)s
+                 | awk '$3=="exon"'                        
+                 | bedtools intersect -a %(chunks)s -b - -c -s
+                 | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+\\t([0-9]+)$/\\1\\t\\2\\t\\3/' 
+                 | sed '1i gene_id\\texon_id\\texon'
+                 | %(load_smt)s > %(outfile)s'''
+    tablename = P.toTable(outfile)
+    load_smt = P.build_load_statement(tablename=tablename,
+                                      options = "-i gene_id -i exon_id")
+
+    P.run()
 
 ###################################################################
 @transform(getTranscriptChunks,
@@ -2100,7 +2190,7 @@ def annotateFirstLastExons(infiles, outfile):
         raise ValueError(exons)
     
     statement = '''bedtools intersect -a %(chunks)s -b %(exons)s -c
-                  | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/' 
+                  | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+\\t([0-9]+)$/\\1\\t\\2\\t\\3/' 
                   | sed '1i gene_id\\texon_id\\t%(colname)s'
                   | %(load_smt)s > %(outfile)s'''
 
@@ -2140,7 +2230,7 @@ def find_n_genes_overlapping_chunks(infiles, outfile):
     statement = ''' cgat gtf2gtf -I %(genes)s --method=merge-transcripts -L %(outfile)s.log
                  | sort -k1,1 -k2,2n
                  | bedtools intersect -a %(chunks)s -b - -c
-                 | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/'
+                 | sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+\\t([0-9]+)$/\\1\\t\\2\\t\\3/'
                  | sed '1i gene_id\\texon_id\\tnGenes'
                  | %(load_smt)s > %(outfile)s'''
 
@@ -2171,7 +2261,7 @@ def annotateRetainedIntronChunks(infiles, outfile):
     chunks, introns = infiles
 
     statement = '''bedtools intersect -a %(chunks)s -b %(introns)s -s -c
-                 |  sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+([0-9]+)$/\\1\\t\\2\\t\\3/'
+                 |  sed -E 's/.+gene_id \\"(ENS[A-Z]+[0-9]+)\\".+exon_id \\"([0-9]+)\\".+\\t([0-9]+)$/\\1\\t\\2\\t\\3/'
                  | sed '1i gene_id\\texon_id\\tretained'
                  | %(load_smt)s > %(outfile)s'''
 
@@ -2210,7 +2300,8 @@ def loadChunkCounts(infiles, outfile):
 
 ###################################################################
 @jobs_limit(1)
-@transform([loadChunkCounts, annotateExonsChunks, annotateIntronChunks,
+@transform([loadChunkCounts, annotateConstituativeExonsChunks,
+            annotateAnyExonsChunks, annotateIntronChunks,
             annotateDetainedChunks, annotateFirstLastExons,
             find_n_genes_overlapping_chunks],
            suffix(".load"),
@@ -4686,7 +4777,7 @@ def get_cpsf_clusters(infile, outfile):
 
 @follows(mkdir("paperclip_chtop.dir"))
 @transform( merge_adjacent_clusters,
-            regex(".+/(.+)merged_clusters.bed.gz"),
+            regex(".+/(.+).merged_clusters.bed.gz"),
             add_inputs(merge_cpsf_wigs,
                        os.path.join(
                            PARAMS["annotations_dir"],
@@ -4857,7 +4948,7 @@ def get_normed_cpsf_metagenes_around_clipsites_in_apa(infiles, outfile):
 
 @follows(mkdir("paperclip_chtop.dir"))
 @transform( merge_adjacent_clusters,
-            regex(".+/(.+)merged_clusters.bed.gz"),
+            regex(".+/(.+).merged_clusters.bed.gz"),
             add_inputs(merge_cpsf_wigs,
                        os.path.join(
                            PARAMS["annotations_dir"],
@@ -4937,9 +5028,35 @@ def get_cpsf_rand_metagenes_around_clusters_normed(infiles, outfile):
         submit=True)
 
     
+@transform(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*union.bam"),
+           regex(".+/(.+.union).bam"),
+           add_inputs(merge_cpsf_wigs,
+                      os.path.join(
+                          PARAMS["annotations_dir"],
+                          PARAMS_ANNOTATIONS["interface_geneset_all_gtf"])),
+           r"paperclip_chtop.dir/\1.cpsf_around_sites_normed_rand.tsv")
+def get_normed_cpsf_metagenes_around_clipsites_rand(infiles, outfile):
+    '''Get CPSF metagenes around sites. Only works with 
+    last exons of transcripts, and doesn't bother to look outside
+    those'''
+
+    clusters, to_profile, gtf = infiles
+    
+    PipelineProj028.get_profile_around_clipsites(
+        clusters,
+        to_profile,
+        gtf,
+        outfile, 
+        norm=True,
+        rands=20,
+        submit=True)
+
+
+    
 @collate([get_cpsf_metagenes_around_clusters,
           get_cpsf_metagenes_around_apa_clusters,
           get_cpsf_metagenes_around_clipsites,
+          get_normed_cpsf_metagenes_around_clipsites_rand,
           get_cpsf_metagenes_around_clipsites_in_apa,
           get_normed_cpsf_metagenes_around_clipsites,
           get_normed_cpsf_metagenes_around_clipsites_in_apa,
@@ -4951,7 +5068,7 @@ def get_cpsf_rand_metagenes_around_clusters_normed(infiles, outfile):
 def load_cpsf_metagenes_around_clusters(infiles, outfile):
 
     P.concatenateAndLoad(infiles, outfile,
-                         regex_filename=".+/(.+-FLAG).(R.|union).+",
+                         regex_filename=".+/(.+-FLAG).(R.|union).cpsf_around.+",
                          cat="track,replicate")
 
     
@@ -5057,6 +5174,59 @@ def load_chtop_apa_chunks(infile, outfile):
                                 ON reference_chunks_chtop_apa(gene_id, exon_id)''')
 
 
+    
+###################################################################
+@follows(mkdir("splicing_ratios.dir"))
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           regex(".+/(.+).gtf.gz"),
+           r"splicing_ratios.dir/\1.firt_two_exons.gtf.gz")
+def get_first_two_exons(infile, outfile):
+
+    import CGAT.GTF as GTF
+    with IOTools.openFile(outfile, "w") as outf:
+        for transcript in GTF.transcript_iterator(
+                GTF.iterator(IOTools.openFile(infile))):
+
+            transcript = [e for e in transcript if e.feature == "exon"]
+
+            if transcript[0].strand == "+":
+                transcript = sorted(transcript, key=lambda x: x.start)
+            else:
+                transcript = sorted(transcript, key=lambda x: x.end,
+                                    reverse=True)
+
+            for e in transcript[:2]:
+                outf.write(str(e) + "\n")
+
+
+###################################################################
+@transform([os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
+            os.path.join(PARAMS["ejc_iclip_dir"],
+                         "deduped.dir/*.bam")],
+           regex(".+/(.+).bam"),
+           add_inputs(get_first_two_exons),
+           r"splicing_ratios.dir/\1.splicing_ratio.tsv")
+def get_first_exon_splicing_ratio(infiles, outfile):
+
+    bamfile, gtffile = infiles
+    PipelineProj028.calculateSplicingIndex(bamfile, gtffile, outfile,
+                                           submit=True)
+
+
+@merge( get_first_exon_splicing_ratio, "first_exon_splicing_index.load")
+def load_first_exon_si(infiles, outfile):
+
+    P.concatenateAndLoad(infiles,
+                         outfile,
+                         regex_filename=".+/(.+)-(.+).(R.|union).splicing_ratio.tsv",
+                         cat="factor,tag,replicate")
+
+    
+###################################################################
+@follows(load_first_exon_si)
+def first_exon_si():
+    pass
 ###################################################################
 # Export
 ###################################################################
@@ -5317,14 +5487,30 @@ def export():
 def full():
     pass
 
+@follows(mkdir("notebooks"),
+         mkdir("notebooks/imgs"))
+@transform(os.path.join(os.path.dirname(__file__), "notebooks/*.Rmd"),
+           formatter(),
+           "notebooks/{basename[0]}.html")
+def build_notebooks(infile, outfile):
 
-@follows( mkdir( "report" ) )
+    basedir = os.path.abspath(PARAMS["workingdir"])
+    statement = ''' Rscript -e 'library(knitr); 
+                                knitr::opts_knit$set(root.dir="%(basedir)s/notebooks");
+                                knit("%(infile)s", output="%(outfile)s") ' '''
+    P.run()
+
+         
+@follows( mkdir( "report" ),
+          build_notebooks)
 def build_report():
     '''build report from scratch.'''
 
     E.info( "starting report build process from scratch" )
     P.run_report( clean = True )
-
+    statement = ''' cp -a notebooks report/html/notebooks'''
+    P.run()
+    
 @follows( mkdir( "report" ) )
 def update_report():
     '''update report.'''
@@ -5332,7 +5518,11 @@ def update_report():
     E.info( "updating report" )
     P.run_report( clean = False )
 
-@follows( update_report )
+    statement = ''' cp -au notebooks report/html/notebooks '''
+    P.run()
+
+@follows( update_report ,
+          build_notebooks)
 def publish():
     '''publish report and data.'''
 

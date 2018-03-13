@@ -623,80 +623,80 @@ def extendBedIntervals(infile, outfile, halfwidth):
             outf.write(str(bed) + "\n")
 
 
-def calculateSplicingIndex(bamfile, gtffile, outfile):
+# def calculateSplicingIndex(bamfile, gtffile, outfile):
 
-    bamfile = pysam.AlignmentFile(bamfile)
+#     bamfile = pysam.AlignmentFile(bamfile)
 
-    counts = E.Counter()
+#     counts = E.Counter()
 
-    for transcript in GTF.transcript_iterator(
-            GTF.iterator(IOTools.openFile(gtffile))):
+#     for transcript in GTF.transcript_iterator(
+#             GTF.iterator(IOTools.openFile(gtffile))):
 
-        exons = GTF.asRanges(transcript, "exon")
-        E.debug("Transcript: %s, %i introns" %
-                (transcript[0].transcript_id, len(exons)-1))
-        ei_juncs = [exon[1] for exon in exons[:-1]]
-        ie_juncs = [exon[0] for exon in exons[1:]]
+#         exons = GTF.asRanges(transcript, "exon")
+#         E.debug("Transcript: %s, %i introns" %
+#                 (transcript[0].transcript_id, len(exons)-1))
+#         ei_juncs = [exon[1] for exon in exons[:-1]]
+#         ie_juncs = [exon[0] for exon in exons[1:]]
 
-        for junc in ei_juncs:
-            reads = bamfile.fetch(
-                reference=transcript[0].contig, start=junc, end=junc+1)
-            spliced = [read for read in reads if 'N' in read.cigarstring]
-            unspliced = [read for read in reads if 'N' not in read.cigarstring]
+#         for junc in ei_juncs:
+#             reads = bamfile.fetch(
+#                 reference=transcript[0].contig, start=junc, end=junc+1)
+#             spliced = [read for read in reads if 'N' in read.cigarstring]
+#             unspliced = [read for read in reads if 'N' not in read.cigarstring]
 
-            if transcript[0].stand == "+":
-                direction = "ei"
-            else:
-                direction = "ie"
+#             if transcript[0].stand == "+":
+#                 direction = "ei"
+#             else:
+#                 direction = "ie"
 
-            for read in unspliced:
-                if (read.reference_end >= junc+3
-                   and read.reference_start <= junc-3):
-                    counts[direction+"_included"] += 1
-                else:
-                    counts["uncounted"] += 1
+#             for read in unspliced:
+#                 if (read.reference_end >= junc+3
+#                    and read.reference_start <= junc-3):
+#                     counts[direction+"_included"] += 1
+#                 else:
+#                     counts["uncounted"] += 1
 
-            for read in spliced:
-                block_ends = [block[1] for block in read.get_blocks]
-                if read.reference_start <= junc-3 and junc in block_ends:
-                    counts[direction+"_excluded"] += 1
+#             for read in spliced:
+#                 block_ends = [block[1] for block in read.get_blocks]
+#                 if read.reference_start <= junc-3 and junc in block_ends:
+#                     counts[direction+"_excluded"] += 1
 
-        for junc in ie_juncs:
+#         for junc in ie_juncs:
 
-            reads = bamfile.fetch(
-                reference=transcript[0].contig, start=junc-1, end=junc)
-            spliced = [read for read in reads if 'N' in read.cigarstring]
-            unspliced = [read for read in reads if 'N' not in read.cigarstring]
+#             reads = bamfile.fetch(
+#                 reference=transcript[0].contig, start=junc-1, end=junc)
+#             spliced = [read for read in reads if 'N' in read.cigarstring]
+#             unspliced = [read for read in reads if 'N' not in read.cigarstring]
 
-            if transcript[0].stand == "-":
-                direction = "ei"
-            else:
-                direction = "ie"
+#             if transcript[0].stand == "-":
+#                 direction = "ei"
+#             else:
+#                 direction = "ie"
 
-            for read in unspliced:
-                if (read.reference_end >= junc+3
-                   and read.reference_start <= junc-3):
-                    counts[direction+"_included"] += 1
+#             for read in unspliced:
+#                 if (read.reference_end >= junc+3
+#                    and read.reference_start <= junc-3):
+#                     counts[direction+"_included"] += 1
 
-            for read in spliced:
-                block_starts = [block[0] for block in read.get_blocks]
-                if read.reference_start <= junc-3 and junc in block_starts:
-                    counts[direction+"_excluded"] += 1
+#             for read in spliced:
+#                 block_starts = [block[0] for block in read.get_blocks]
+#                 if read.reference_start <= junc-3 and junc in block_starts:
+#                     counts[direction+"_excluded"] += 1
 
-    header = "\t".join(["exon_intron_included",
-                        "exon_intron_excluded",
-                        "intron_exon_included",
-                        "intron_exon_excluded",
-                        "uncounted"])
+#     header = "\t".join(["exon_intron_included",
+#                         "exon_intron_excluded",
+#                         "intron_exon_included",
+#                         "intron_exon_excluded",
+#                         "uncounted"])
 
-    with IOTools.openFile(outfile, "w") as outf:
+#     with IOTools.openFile(outfile, "w") as outf:
 
-        outf.write(header+"\n")
-        outf.write("\t".join(counts["ei_included"],
-                             counts["ei_excluded"],
-                             counts["ie_included"],
-                             counts["ie_excluded"],
-                             counts["uncounted"]) + "\n")
+#         outf.write(header+"\n")
+#         outf.write("\t".join(counts["ei_included"],
+#                              counts["ei_excluded"],
+#                              counts["ie_included"],
+#                              counts["ie_excluded"],
+#                              counts["uncounted"]) + "\n")
 
 @cluster_runnable      
 def exonBoundaryProfiles(bamfile, gtffile, outfile, center):
@@ -2118,12 +2118,11 @@ def get_apa_chunks(table, gfffile, outfile):
     IOTools.writeLines(outfile, outlines, header=["gene_id", "exon_id", "apa_site"])
     
 
-def meta_around_cluster(cluster, counts, strand, norm=False):
-
+def meta_around_cluster(cluster, counts,norm=False):
     
     counts_before_cluster = counts.loc[cluster[0]-100:(cluster[0]-1)]
     counts_after_cluster = counts.loc[cluster[1]:cluster[1]+99]
-    counts_in_cluster = counts.loc[cluster[0]:cluster[1]]
+    counts_in_cluster = counts.loc[cluster[0]:(cluster[1]-1)]
     
     if counts_before_cluster.sum() + counts_after_cluster.sum() + \
        counts_in_cluster.sum() == 0:
@@ -2135,31 +2134,14 @@ def meta_around_cluster(cluster, counts, strand, norm=False):
         counts_in_cluster, cluster[1] - cluster[0], 32)
     
     binned_cluster_counts = binned_cluster_counts * 32.0/(cluster[1]-cluster[0])
+
+    counts_before_cluster.index = counts_before_cluster.index - cluster[0]
+    counts_after_cluster.index = counts_after_cluster.index - cluster[1] + 32
+
+    this_cluster_counts=pd.concat([counts_before_cluster,
+                                   binned_cluster_counts,
+                                   counts_after_cluster])
     
-    counts_before_cluster = counts_before_cluster.reindex(
-        range(cluster[0]-100, cluster[0]), fill_value=0)
-    counts_after_cluster = counts_after_cluster.reindex(
-        range(cluster[1], cluster[1] + 100), fill_value=0)
-    
-    if strand == "-":
-        
-        counts_after_cluster.index = range(0, -100, -1)
-        counts_before_cluster.index = range(132, 32, -1)
-        binned_cluster_counts.index = range(32, 0, -1)
-        
-        this_cluster_counts = pd.concat([counts_after_cluster,
-                                         binned_cluster_counts,
-                                         counts_before_cluster])
-        
-    else:
-        
-        counts_after_cluster.index = range(32, 132)
-        counts_before_cluster.index = range(-100, 0)
-        
-        this_cluster_counts = pd.concat([counts_before_cluster,
-                                         binned_cluster_counts,
-                                         counts_after_cluster])
-        
     if norm:
         this_cluster_counts = this_cluster_counts/this_cluster_counts.sum()
             
@@ -2198,7 +2180,7 @@ def get_profile_around_clusters(clusters_bed, to_profile, gtf, outfile,
         stats["transcripts"] += 1
         strand = transcript[0].strand
         contig = transcript[0].contig
-        exons = GTF.asRanges(transcript, "exon")
+        exons = [e for e in transcript if e.feature=="exon"]
         if strand == "+":
             last_exon = sorted(exons)[-1]
         else:
@@ -2208,20 +2190,22 @@ def get_profile_around_clusters(clusters_bed, to_profile, gtf, outfile,
 
         if contig in clusters:
             transcript_clusters = list(clusters[contig].find(
-                last_exon[0], last_exon[1]))
+                last_exon.start, last_exon.end))
         else:
             continue
 
         transcript_clusters = [c for c in transcript_clusters
-                               if c[0] >= (last_exon[0]+100) and
-                               c[1] < last_exon[1]-100]
+                               if c[0] >= (last_exon.start+100) and
+                               c[1] < last_exon.end-100]
         
         if len(transcript_clusters) == 0:
             continue
         
-        counts = iCLIP.count_intervals(clip_getter, [last_exon],
-                                       contig, strand)
-
+        counts = iCLIP.count_transcript([last_exon], clip_getter)
+        g2t = iCLIP.TranscriptCoordInterconverter([last_exon])
+        transcript_clusters = [g2t.genome_interval2transcript(c[:2])
+                               for c in transcript_clusters]
+        
         if counts.sum() == 0:
             continue
 
@@ -2229,19 +2213,19 @@ def get_profile_around_clusters(clusters_bed, to_profile, gtf, outfile,
             stats["clusters"] += 1
             if rands == 0:
                 this_cluster_counts = meta_around_cluster(cluster, counts,
-                                                          strand, norm)
-                if counts_accumulator is not None:
+                                                          norm)
+                if this_cluster_counts is not None:
                     counts_accumulator.append(this_cluster_counts)
                     stats["sites"] += this_cluster_counts.sum()
             else:
                 clen = cluster[1] - cluster[0]
                 for i in range(rands):
                     cluster = list(cluster)
-                    cluster[0] = random.randint(last_exon[0] + 100,
-                                                last_exon[1] - 101 - clen)
+                    cluster[0] = random.randint(
+                        100, g2t.transcript_intervals[0][1] - 101 - clen)
                     cluster[1] = cluster[0] + clen
                     this_cluster_counts = meta_around_cluster(
-                        cluster, counts, strand, norm)
+                        cluster, counts, norm)
                     if this_cluster_counts is not None:
                         counts_accumulator[i] = counts_accumulator[i].add(
                             this_cluster_counts, fill_value=0)
@@ -2251,12 +2235,13 @@ def get_profile_around_clusters(clusters_bed, to_profile, gtf, outfile,
                 (stats["transcripts"], stats["clusters"], stats["sites"]))
 
     if len(counts_accumulator) == 0:
-        cc = pd.Series([0]*232, index=range(-100,132))
-        counts_accumulator=[cc, cc.copy()]
+        cc = pd.Series([0]*232, index=range(-100, 132))
+        counts_accumulator = [cc, cc.copy()]
 
     if rands == 0:
         df = pd.concat(counts_accumulator, axis=1).transpose()
         profile = df.sum()
+        
         def boot_sum(df):
             boot_sample = df.sample(n=df.shape[0], replace=True)
             boot_sum = boot_sample.sum()
@@ -2268,7 +2253,7 @@ def get_profile_around_clusters(clusters_bed, to_profile, gtf, outfile,
         boot_sums = counts_accumulator
         profile = boot_sums.sum(axis=1)/rands
 
-    boot_quantiles = boot_sums.quantile([0.025,0.975], axis=1)
+    boot_quantiles = boot_sums.quantile([0.025, 0.975], axis=1)
     boot_quantiles.index = ["q2.5", "q97.5"]
 
     profile.name = "count"
@@ -2281,7 +2266,7 @@ def get_profile_around_clusters(clusters_bed, to_profile, gtf, outfile,
 
 @cluster_runnable
 def get_profile_around_clipsites(sites_file, to_profile, gtf, outfile, use_transcripts=None,
-                                 norm=False):
+                                 norm=False, rands=0):
     ''' This function with look for clusters in the final exon of transcripts in outfile
     and build a metagene profile from the BAM or bw in to_profile around them.'''
 
@@ -2296,7 +2281,12 @@ def get_profile_around_clipsites(sites_file, to_profile, gtf, outfile, use_trans
     else:
         clip_getter = iCLIP.make_getter(plus_wig=to_profile)
 
-    counts_accumulator = []
+    if rands == 0:
+        counts_accumulator = []
+    else:
+        counts_accumulator = np.zeros([201,rands])
+        counts_accumulator = pd.DataFrame(counts_accumulator)
+        counts_accumulator.index = range(-100, 101)
     
     for transcript in GTF.transcript_iterator(GTF.iterator(
           IOTools.openFile(gtf))):
@@ -2335,35 +2325,52 @@ def get_profile_around_clipsites(sites_file, to_profile, gtf, outfile, use_trans
         if counts.sum() == 0:
             continue
 
-        for site in transcript_sites.index:
-
-            site_counts = counts.loc[site-100:(site+100)]
-            if site_counts.sum() == 0:
-                continue
-            
-            site_counts.index = site_counts.index - site
-            site_counts = site_counts * transcript_sites.loc[site]
-            if norm:
-                site_counts = site_counts/site_counts.sum()
+        def _meta_over_sites(sites, counts, norm):
+            t_counts = []
+            for site in sites.index:
                 
-            counts_accumulator.append(site_counts)
-            stats["sites"] += site_counts.sum()
+                site_counts = counts.loc[site-100:(site+100)]
+                if site_counts.sum() == 0:
+                    continue
+            
+                site_counts.index = site_counts.index - site
+                site_counts = site_counts * sites.loc[site]
+
+                if norm:
+                    site_counts = site_counts/site_counts.sum()
+                t_counts.append(site_counts)
+                
+            return t_counts
+
+        if rands == 0:
+            counts_accumulator.extend(_meta_over_sites(sites, counts, norm))
+        else:
+            for i in range(rands):
+                rsites = iCLIP.randomiseSites(transcript_sites,
+                                              100, last_exon.end - last_exon.start - 100,
+                                              keep_dist=True)
+                for s in _meta_over_sites(rsites, counts, norm):
+                    counts_accumulator[i] = counts_accumulator[i].add(s)
 
         E.debug("%f transcripts, %f clusters, %f sites" %
                 (stats["transcripts"], stats["clusters"], stats["sites"]))
 
-    df = pd.concat(counts_accumulator, axis=1).transpose()
-    profile = df.sum()
-    def boot_sum(df):
-        boot_sample = df.sample(n=df.shape[0], replace=True)
-        boot_sum = boot_sample.sum()
-        return boot_sum
+    if rands == 0:
+        df = pd.concat(counts_accumulator, axis=1).transpose()
+        profile = df.sum()
+        def boot_sum(df):
+            boot_sample = df.sample(n=df.shape[0], replace=True)
+            boot_sum = boot_sample.sum()
+            return boot_sum
 
-    boot_sums = [boot_sum(df) for x in range(1000)]
-    boot_sums = pd.concat(boot_sums, axis=1)
-
+        boot_sums = [boot_sum(df) for x in range(1000)]
+        boot_sums = pd.concat(boot_sums, axis=1)
+    else:
+        boot_sums = counts_accumulator
+        profile = counts_accumulator.sum(axis=1)/rands
+        
     boot_quantiles = boot_sums.quantile([0.025,0.975], axis=1)
-    boot_quantiles.index = ["q2.5", "q97.2"]
+    boot_quantiles.index = ["q2.5", "q97.5"]
 
     profile.name = "count"
     df = pd.concat([profile, boot_quantiles.transpose()], axis=1).reset_index()
@@ -2372,5 +2379,62 @@ def get_profile_around_clipsites(sites_file, to_profile, gtf, outfile, use_trans
     df.to_csv(IOTools.openFile(outfile, "w"), index=False, sep="\t")
 
 
+@cluster_runnable
+def calculateSplicingIndex(bamfile, gtffile, outfile):
+
+    bamfile = pysam.AlignmentFile(bamfile)
+
+    counts = E.Counter()
+
+    for transcript in GTF.transcript_iterator(
+            GTF.iterator(IOTools.openFile(gtffile))):
+
+        introns = GTF.toIntronIntervals(transcript)
+        E.debug("Gene %s (%s), Transcript: %s, %i introns" %
+                (transcript[0].gene_id,
+                 transcript[0].contig,
+                 transcript[0].transcript_id,
+                 len(introns)))
+
+        for intron in introns:
+            reads = bamfile.fetch(
+                reference=transcript[0].contig,
+                start=intron[0], end=intron[1])
+            
+            for read in reads:
+                if 'N' in read.cigarstring:
+                    blocks = read.get_blocks()
+                    starts, ends = zip(*blocks)
+                    if intron[0] in ends and intron[1] in starts:
+                        counts["Exon_Exon"] += 1
+                    else:
+                        counts["spliced_uncounted"] += 1
+                elif (read.reference_start <= intron[0] - 3
+                      and read.reference_end >= intron[0] + 3):
+                    if transcript[0].strand == "+":
+                        counts["Exon_Intron"] += 1
+                    else:
+                        counts["Intron_Exon"] += 1
+                elif (read.reference_start <= intron[1] - 3
+                      and read.reference_end >= intron[1] + 3):
+                    if transcript[0].strand == "+":
+                        counts["Intron_Exon"] += 1
+                    else:
+                        counts["Exon_Intron"] += 1
+                else:
+                    counts["unspliced_uncounted"] += 1
+
+        E.debug("Done, counts are: " + str(counts))
+    header = ["Exon_Exon",
+              "Exon_Intron",
+              "Intron_Exon",
+              "spliced_uncounted",
+              "unspliced_uncounted"]
+
+    with IOTools.openFile(outfile, "w") as outf:
+
+        outf.write("\t".join(header)+"\n")
+        outf.write("\t".join(map(str, [counts[col] for col in header]))
+                   + "\n")
 
     

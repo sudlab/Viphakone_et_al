@@ -195,13 +195,17 @@ class FirstLastExonBoot(ProjectTracker):
                                    exon,
                                    intron
                      FROM chunk_counts as cc
+                      INNER JOIN annotations.gene_stats as gs
+                       ON gs.gene_id = cc.gene_id
+                      INNER JOIN annotations.gene_info as gi
+                       ON cc.gene_id = gi.gene_id
                       INNER JOIN reference_chunks_gene_first_pc_exons as fe
                        ON fe.gene_id = cc.gene_id AND
                           fe.exon_id = cc.exon_id
                       INNER JOIN reference_chunks_gene_last_pc_exons as le
                        ON le.gene_id = cc.gene_id AND
                           le.exon_id = cc.exon_id 
-                      INNER JOIN reference_chunks_constitive_exons as ce
+                      INNER JOIN reference_chunks_exons as ce
                        ON ce.gene_id = cc.gene_id AND
                           ce.exon_id = cc.exon_id
                       INNER JOIN reference_chunks_introns as ie
@@ -211,6 +215,8 @@ class FirstLastExonBoot(ProjectTracker):
                        ON ng.gene_id = cc.gene_id AND
                           ng.exon_id = cc.exon_id
                       WHERE ng.ngenes == 1
+                        AND gene_biotype=='protein_coding'
+                        AND contig != 'chrM'
                      '''
 
     track_pattern = "(.+_(?:FLAG|GFP))_union"
@@ -219,7 +225,7 @@ class FirstLastExonBoot(ProjectTracker):
         return "FlipIn_" + re.match(".+_(.+_[Ru].+)", self.track2col[track]).groups()[0]
     
     def grouping(self, row):
-        if row["intron"]==1 and row["exon"]==0:
+        if row["intron"]>0 and row["exon"]==0:
             return "intron"
         elif row["first"]>=1 :
             return "first"
@@ -278,13 +284,17 @@ class DetainedBoot(FirstLastExonBoot):
                                    intron,
                                    sig
                      FROM chunk_counts as cc
+                      INNER JOIN annotations.gene_stats as gs
+                       ON gs.gene_id = cc.gene_id
+                      INNER JOIN annotations.gene_info as gi
+                       ON cc.gene_id = gi.gene_id
                       LEFT JOIN detained_intron_calls di
                        ON di.gene_id = cc.gene_id AND
                           di.intron_id = cc.exon_id
                       INNER JOIN reference_chunks_retained_introns as ri
                        ON  ri.gene_id = cc.gene_id AND
                            ri.exon_id = cc.exon_id
-                       INNER JOIN reference_chunks_constitive_exons as ce
+                       INNER JOIN reference_chunks_exons as ce
                        ON ce.gene_id = cc.gene_id AND
                           ce.exon_id = cc.exon_id
                       INNER JOIN reference_chunks_introns as ie
@@ -294,6 +304,8 @@ class DetainedBoot(FirstLastExonBoot):
                        ON ng.gene_id = cc.gene_id AND
                           ng.exon_id = cc.exon_id
                       WHERE ng.ngenes == 1
+                        AND gene_biotype=='protein_coding'
+                        AND contig != 'chrM'
                      '''
 
     def grouping(self, row):
@@ -302,19 +314,38 @@ class DetainedBoot(FirstLastExonBoot):
             return "Detained"
         elif row["retained"]==1:
             return "Retained"
-        elif row["intron"]==1 and row["exon"]==0:
+        elif row["intron"]>0 and row["exon"]==0:
             return "Intron"
         elif  row["intron"] == 0:
             return "Exon"
         else:
             return None
 
+class CombinedDeReBoot(DetainedBoot):
+
+    def grouping(self, row):
+
+        if row["sig"] == 'TRUE':
+            return "Retained"
+        elif row["retained"]==1:
+            return "Retained"
+        elif row["intron"]>0 and row["exon"]==0:
+            return "Intron"
+        elif  row["intron"] == 0:
+            return "Exon"
+        else:
+            return None
+    
 class ChTopAPABoot(FirstLastExonBoot):
 
      statement = '''SELECT DISTINCT cc.gene_id, cc.exon_id,
                                    %(columns)s,
                                    apa_site
                      FROM chunk_counts as cc
+                      INNER JOIN annotations.gene_stats as gs
+                       ON gs.gene_id = cc.gene_id
+                      INNER JOIN annotations.gene_info as gi
+                       ON cc.gene_id = gi.gene_id
                       LEFT JOIN reference_chunks_gene_last_pc_exons as le
                        ON le.gene_id = cc.gene_id AND
                           le.exon_id = cc.exon_id
@@ -326,6 +357,8 @@ class ChTopAPABoot(FirstLastExonBoot):
                           ng.exon_id = cc.exon_id
                       WHERE ng.ngenes == 1 AND
                        le.last > 0
+                        AND gene_biotype=='protein_coding'
+                        AND contig != 'chrM'
                      '''
 
      def grouping(self, row):
