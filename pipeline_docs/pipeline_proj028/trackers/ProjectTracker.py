@@ -16,7 +16,7 @@ class ProjectTracker(TrackerSQL):
         attach = [(os.path.join(PARAMS["iclip_dir"], PARAMS["iclip_database"]),
                    "iclip"),
                   (PARAMS["annotations_database"], "annotations"),
-                  (os.path.join(PARAMS["ejc_iclip_dir"], "csvdb"), "ejc"),
+                  (os.path.join("/ifs/projects/proj028/EJC_iCLIP_new", "csvdb"), "ejc"),
                   (PARAMS["external_chtop_apa_db"], "chtop_apa")]
 
         TrackerSQL.__init__(self, backend, attach=attach, *args, **kwargs)

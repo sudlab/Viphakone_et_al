@@ -23,7 +23,16 @@ Figure 1
 
    Figure 1b: Fraction of expressed protein coding transcriptome with at least one crosslinked base.
 
- 
+
+.. report:: misc.GeneFractions
+   :render: table
+   :transform: melt
+   :tracks: Alyref,Chtop,Nxf1
+   :groupby: all
+
+   Above as table
+
+
 .. report:: misc.ClippedFractionOverlaps
    :render: venn-plot
    :transform: venn

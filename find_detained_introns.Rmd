@@ -1,0 +1,167 @@
+---
+title: "R Notebook"
+output: html
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+
+```{r}
+library(RSQLite)
+db <- dbConnect(SQLite(), "csvdb")
+introns_frame = dbGetQuery(db,"SELECT chunks.gene_id, chunks.exon_id, intron, efflen FROM reference_chunks_introns as chunks LEFT JOIN intron_lengths as lens ON chunks.gene_id = lens.gene_id AND chunks.exon_id = lens.exon_id")
+```
+
+
+```{r}
+chunk_counts <- read.delim("chunk_splicing.dir/chunk_uniq_counts.tsv.gz", header=T)
+
+library(tidyr)
+meta <- chunk_counts[1]
+meta$Geneid.Chr.Start.End.Strand.Length <- as.character(meta$Geneid.Chr.Start.End.Strand.Length)
+
+chunk_counts <- chunk_counts[,-1]
+meta <- meta %>% extract(Geneid.Chr.Start.End.Strand.Length, into = c("gene_id","Chr","Start","End","Strand","Length"), 
+                          regex = "(ENSG[[:digit:]]+)-([[:alnum:]]+)-([[:digit:]]+)-([[:digit:]]+)-([-+])-([[:digit:]]+)",remove=FALSE)
+meta$intron_id = introns_frame$exon_id
+meta$efflen = introns_frame$efflen
+```
+
+Get those chunks that are introns
+
+```{r}
+intron_chunks <- chunk_counts[introns_frame$intron > 0,]
+intron_meta <- meta[introns_frame$intron > 0,]
+```
+
+We will now use the effective lengths previously calculated to weight the introns. The Boutz papers says the weighting is the effective length- the read legnth. But because we allow reads that don't start in the intron to be counted, subtracting the read length doesn't work. For 50bp reads, there are 40 positions upstream of the the start of the intron that would allow a read to be counted and anything within 10bp of the end. So actaully the number should be the effective length + 30, so we will calculate eff len using a larger window - start - 40bp to end - 10bp
+
+```{r}
+library(dplyr)
+intron_meta$weight <- sqrt(intron_meta$efflen)
+intron_meta <- intron_meta %>% group_by(gene_id) %>% mutate(norm_weight=weight/sum(weight)) %>% ungroup()
+```
+
+Note that we have some cases were the normalised weight for the intron is zero despite there being some reads mapped:
+
+```{r}
+table(rowSums(intron_chunks[intron_meta$weight==0,])>0)
+```
+
+However, this is a much higher % of zero sums that in rows where the weight is greater than zero
+
+```{r}
+table(rowSums(intron_chunks[intron_meta$weight>0,])>0)
+```
+
+
+We should filter out the the zero weight introns now to prevent them from contaminating the others
+
+```{r}
+intron_chunks <- intron_chunks[intron_meta$weight>0,]
+intron_meta <- intron_meta[intron_meta$weight>0,]
+intron_meta <- intron_meta %>% group_by(gene_id) %>% mutate(norm_weight=weight/sum(weight)) %>% ungroup()
+```
+
+Now we need to take each sample and generate its null version. We sum all the reads in all the introns and then distribute them according to the weights for each sample
+
+```{r}
+library(DESeq2)
+dds <- DESeqDataSetFromMatrix(intron_chunks,  colData=data.frame(cond=rep(1, ncol(chunk_counts))), design=~1)
+dds <- estimateSizeFactors(dds)
+normed_counts <- counts(dds, normalized=TRUE)
+combined_tab = as.data.frame(c(intron_meta, as.data.frame(normed_counts)))
+combined_tab <- combined_tab %>% gather(samp, count, HEK293_Cyto.PolyA.R1:HEK293_Nuc.PolyA.R3)
+null_reps <- combined_tab %>% group_by(gene_id, samp) %>% mutate(count = round(sum(count)*norm_weight)) %>% ungroup()
+null_reps <- null_reps %>% spread(samp, count) 
+null_mat <- as.matrix(null_reps[,12:17])
+colnames(null_mat) <- paste(colnames(null_mat), "null", sep="_")
+colnames(intron_chunks) <- paste(colnames(intron_chunks), "real", sep="_")
+combined_count_mat <- as.matrix(cbind(intron_chunks, null_mat))
+colData <- data.frame(name=colnames(combined_count_mat)) %>% separate(name, into=c("CellType", "Fraction","Method", "Replicate","null") )
+rownames(combined_count_mat) = paste(intron_meta$gene_id, intron_meta$intron_id, sep="_")
+combined_count_mat <- combined_count_mat[is.finite(rowSums(combined_count_mat)),]
+```
+
+Now we have the matrix we can do the test. We will start by doing it for Control samples in Total RNA
+
+```{r}
+Total_dds <- DESeqDataSetFromMatrix(combined_count_mat[,colData$Fraction=="Cyto"],
+                                    colData=colData[ colData$Fraction=="Cyto",],
+                                    design=~Replicate+null)
+total_dds <-DESeq(Total_dds,test="LRT", reduced=~Replicate)
+total_results <- results(total_dds, contrast = c("null","real","null"),
+                         , alpha=0.1)
+
+summary(total_results)
+table(total_results$padj <0.01 & total_results$log2FoldChange > 2)
+```
+We can also look at the same for nuclear data
+
+```{r}
+Nuc_dds <- DESeqDataSetFromMatrix(combined_count_mat[,colData$Fraction=="Nuc"],
+                                    colData=colData[colData$Fraction=="Nuc",],
+                                    design=~Replicate+null)
+Nuc_dds <-DESeq(Nuc_dds, test="LRT", reduced=~Replicate)
+nuc_results <- results(Nuc_dds, contrast = c("null","real","null"),
+                         )
+
+summary(nuc_results)
+table(nuc_results$padj <0.01 & nuc_results$log2FoldChange > 2)
+```
+
+Lets look at some of these
+
+```{r}
+head(as.data.frame(nuc_results[is.finite(nuc_results$padj) & nuc_results$padj <0.01 & nuc_results$log2FoldChange > 2,]),n=20)
+```
+
+Looking at some of these in the browser, it looks like they are introns with 0 weight, yet still have reads aligned to them. How many is that the case for?
+
+
+```{r}
+library(ggplot2)
+nuc_results$ids <- rownames(nuc_results)
+as.data.frame(nuc_results) %>% separate(ids, c("gene_id", "intron_id")) -> nuc_results
+nuc_results <-merge(nuc_results,intron_meta)
+table(subset(nuc_results, padj < 0.01 & log2FoldChange >1)$weight==0)
+
+```
+
+```{r}
+nuc_results$norm_ratio <- nuc_results$efflen/(as.numeric(nuc_results$Length)+80)
+nuc_results %>% filter(is.finite(padj)) %>% ggplot() + aes(norm_ratio, padj<0.05 & log2FoldChange>1, group=1) + geom_smooth()
+```
+
+
+After removeal of 0 weighted introns, the rise in rate of significance at lower weight introns has been removed. 
+
+
+What is the overlap between the nuclear and cytoplasmic calls?
+
+```{r, fig.width=4, fig.height=4}
+library(gplots)
+total_results$ids <- rownames(total_results)
+as.data.frame(total_results) %>% separate(ids, c("gene_id", "intron_id")) -> total_results
+total_results <-merge(total_results,intron_meta)
+total_results$norm_ratio <- total_results$efflen/(as.numeric(total_results$Length)+80)
+total_results$sig <- total_results$padj < 0.01 & total_results$log2FoldChange > 2 & is.finite(total_results$padj)
+nuc_results$sig <- is.finite(nuc_results$padj) & nuc_results$padj < 0.01 & nuc_results$log2FoldChange > 2
+venn(list(
+  nuc=paste(nuc_results$gene_id[nuc_results$sig], nuc_results$intron_id[nuc_results$sig]),
+  cyto=paste(total_results$gene_id[total_results$sig], total_results$intron_id[total_results$sig])))
+```
+
+Save out the results
+
+```{r}
+
+total_results$fraction <- "cyto"
+nuc_results$fraction <- "nuc"
+all_results <- rbind (total_results, nuc_results)
+write.table(all_results, "chunk_splicing.dir/detained_intron_calls.tsv", sep = "\t", quote=F, col.names=T, row.names=F)
+```
+
+

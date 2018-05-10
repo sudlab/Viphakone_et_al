@@ -1,0 +1,246 @@
+---
+title: "Fig 1F lower panel: Meta genes over UTRs, CDS and flank"
+output: 
+  html_notebook:
+    code_folding: hide
+---
+
+Here are some different ways for showing the metagenes split out into different sections. We need to decide which we wish to show.
+
+The first way is to split out into 5' UTR, 3' UTR and CDS. These are now effectively showing some sort of per-gene normalised fragments per base (a bit like FPKM, but instead of calculating the per million part across the whole sample, its calculated across each gene seperately).
+The results are below:
+```{r}
+library(RSQLite)
+iclip_metagenes <- dbGetQuery(dbConnect(SQLite(), "../csvdb"), "SELECT * FROM iclip_utrprofiles")
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+factor_pal = c("Alyref"=cbPalette[7],
+               "Chtop"=cbPalette[4],
+               "Nxf1"=cbPalette[8],
+               "Cntrl"=cbPalette[3],
+               "eIF4A3"=cbPalette[2],
+               "PTB"=cbPalette[1],
+               "UPF3B"=cbPalette[6])
+```
+
+
+```{r, fig.width=4, fig.height=1.5, dpi=172, units="in"}
+filter(iclip_metagenes, replicate == "union", factor %in% c("Alyref", "Chtop", "Nxf1", "FlipIn")) %>%
+  group_by(factor) %>%
+  mutate(density=rollmean(density, 3, na.pad=TRUE)) %>%
+ggplot() +
+  aes(bin, density, col=factor) +
+  geom_line(size=0.7, alpha=0.9) + 
+  scale_color_manual(values=factor_pal, guide=FALSE) +
+  theme_bw(base_size=10) +
+  geom_vline(xintercept = c(50,70,170,240), lty=2, alpha=0.5) +
+  scale_x_continuous(breaks = c(25,60,120,205,265),
+                     labels = c("Uptream", "5' UTR", "CDS", "3' UTR", "Downtream"),
+                     name=NULL) +
+  scale_y_continuous(breaks=NULL, name=expression(paste("Normalized tags ",bp^{-1}))) -> g
+
+print(g)
+```
+
+Advantages:
+
+ * a good peak for for Alyref 
+ * nice smooth profiles for all factors. 
+ * FlipIn is also shown a being much less strong than the others (this is because area under the curve is proportaitonal to the nubmer of genes that
+have any reads)
+ * FlipIn doesn't have much of a pattern to it. 
+ 
+Disadvanges:
+
+ * The 3' enrichment for Chtop isn't very apparent.
+ * Profiles decay towards the 3' end of the 3' UTR, presumably due to low expression.
+ * Both of these could be due to poor UTR annotation.
+
+
+We can also try normalising by RNA, Nuclera RNA first:
+
+```{r}
+nuclear_rna = iclip_metagenes %>%
+  filter(factor == "Nuclear") %>%
+  group_by(bin) %>%
+  summarize(nuclear_rna=mean(density))
+chromatin_rna = iclip_metagenes %>%
+  filter(factor == "HEK293", tag=="WT",replicate=="1") %>%
+  group_by(bin) %>%
+  summarize(chromatin_rna=mean(density))
+normed_clip = iclip_metagenes %>%
+  inner_join(nuclear_rna) %>% 
+  inner_join(chromatin_rna) %>%
+  mutate(normed_nuclear = density/nuclear_rna,
+         normed_chromatin = density/chromatin_rna)
+```
+
+```{r, fig.width=4, fig.height=1.5, dpi=172, units="in"}
+filter(normed_clip, replicate == "union", factor %in% c("Alyref", "Chtop", "Nxf1", "FlipIn")) %>%
+  group_by(factor) %>%
+  mutate(normed=rollmean(normed_nuclear, 3, na.pad=TRUE)) %>%
+ggplot() +
+  aes(bin, normed, col=factor) +
+  geom_line(size=0.7, alpha=0.9) + 
+  scale_color_manual(values=factor_pal, guide=FALSE) +
+  theme_bw(base_size=10) +
+  geom_vline(xintercept = c(50,70,170,240), lty=2, alpha=0.5) +
+  scale_x_continuous(breaks = c(25,60,120,205,265),
+                     labels = c("Uptream", "5' UTR", "CDS", "3' UTR", "Downtream"),
+                     name=NULL) +
+  scale_y_continuous(breaks=NULL, name=expression(paste("Normalized tags ",bp^{-1}))) -> g
+ggsave("imgs/fig1F.pdf", g, height=1.5, width=1.5, unit="in", useDingbats=FALSE)
+print(g)
+```
+
+Advantages:
+
+ * Good enrichment of Alyref in 5' UTR
+ * Much stronger enrichment of Chtop over 3' UTR
+ 
+Disadvantages:
+
+ * Strong enrichment at the 3' end of the Upstream window. This would be due to any signal being strongly boosted by the low amont of RNA
+ * Strong discontinuity at end of 5' UTR suggests normalising woorking poorly. This could be due to RNA seq reads not "fitting" in the 5' UTR/
+ * Incrase in signal at end of 3' UTR - see above.
+ * Boost in FlipIn signal in 3' UTR. This suggests that the normalisation isn't really working as it should. 
+ 
+ We could try using chromatin instead of nuclear RNA.
+```{r, fig.width=4, fig.height=1.5, dpi=172, units="in"}
+filter(normed_clip, replicate == "union", factor %in% c("Alyref", "Chtop", "Nxf1", "FlipIn")) %>%
+  group_by(factor) %>%
+  mutate(normed=rollmean(normed_chromatin, 3, na.pad=TRUE)) %>%
+ggplot() +
+  aes(bin, normed, col=factor) +
+  geom_line(size=0.7, alpha=0.9) + 
+  scale_color_manual(values=factor_pal, guide=FALSE) +
+  theme_bw(base_size=10) +
+  geom_vline(xintercept = c(50,70,170,240), lty=2, alpha=0.5) +
+  scale_x_continuous(breaks = c(25,60,120,205,265),
+                     labels = c("", "5' UTR", "CDS", "3' UTR", ""),
+                     name=NULL) +
+  scale_y_continuous(breaks=NULL, name=expression(paste("Normalized tags ",bp^{-1})))-> g
+
+print(g)
+```
+
+Advantages:
+
+* Smooth decay of patterns btween regions.
+* Low FlipIn
+* Strong Chtop signal in 3' UTR
+
+Disadvantages:
+
+* FlipIn signal shows some boost in both 3' and 5' UTRs
+* Would mean introducing yet another dataset into the study that won't be used anywhere else.
+
+
+We could look at first, middle and last exons instead of 5UTR, CDS, 3UTR, built using protein coding genes with at least 3 exons. 
+
+```{r}
+first_mid_last = iclip_metagenes <- dbGetQuery(dbConnect(SQLite(), "/ifs/projects/proj028/project_pipeline_iCLIP5/csvdb"), "SELECT * FROM iclip_firstmidlast")
+```
+
+```{r, fig.width=4, fig.height=1.5, dpi=172, units="in"}
+filter(first_mid_last, replicate == "union", factor %in% c("Alyref", "Chtop", "Nxf1", "FlipIn"),
+       region != "introns") %>%
+  group_by(factor) %>%
+  mutate(bin=seq(from=0,to=289,by=1)) %>%
+  group_by(factor) %>%
+  mutate(density=rollmean(density, 3, na.pad=TRUE)) %>%
+ggplot() +
+  aes(bin, density, col=factor) +
+  geom_line(size=0.7, alpha=0.9) + 
+  scale_color_manual(values=factor_pal, guide=FALSE) +
+  theme_bw(base_size=10) +
+  geom_vline(xintercept = c(50,70,170,240), lty=2, alpha=0.5) +
+  scale_x_continuous(breaks = c(25,60,120,205,265),
+                     labels = c("", "First", "Middle", "Last", ""),
+                     minor_breaks = NULL,
+                     name=NULL) +
+  scale_y_continuous(breaks=NULL, name=expression(paste("Normalized tags ",bp^{-1}))) -> g
+
+print(g)
+```
+
+Advantages:
+
+* Shows enrichment of Chtop at 3' end well
+* Good signal for Alyref in the first exon
+* No signal for FlipIni n the last exon. 
+
+Disadvangages:
+
+* That annoying dip at the end of the first exon!
+* Some enrichment for FlipIn in the first exon.
+
+The final way could be to show the above, but without the per-gene normalisation. This means that strongly expressed genes will now contribute more the signal, and the lowely expressed, noisy genes will not. 
+
+```{r}
+first_mid_last_nonorm = iclip_metagenes <- dbGetQuery(dbConnect(SQLite(), "/ifs/projects/proj028/project_pipeline_iCLIP5/csvdb"), "SELECT * FROM iclip_firstmidlast_nonorm")
+```
+
+```{r, fig.height=1.5, fig.width=4}
+filter(first_mid_last_nonorm, replicate == "union", factor %in% c("Alyref", "Chtop", "Nxf1", "FlipIn"),
+       ) %>%
+#  group_by(factor) %>%
+#  mutate(bin=seq(from=0,to=289,by=1)) %>%
+  group_by(factor) %>%
+  mutate(density=rollmean(density, 3, na.pad=TRUE)) %>%
+ggplot() +
+  aes(bin, density, col=factor) +
+  geom_line(size=0.7, alpha=0.9) + 
+  scale_color_manual(values=factor_pal, guide=FALSE) +
+  theme_bw(base_size=10) +
+  geom_vline(xintercept = c(50,70,170,270,340), lty=2, alpha=0.5) +
+  scale_x_continuous(breaks = c(25,60,120,220,305,365),
+                     labels = c("", "First", "Middle","Introns", "Last", ""),
+                     minor_breaks = NULL,
+                     name=NULL) +
+  scale_y_continuous(breaks=NULL, name="Tags per bp") -> g
+
+print(g)
+
+```
+
+Advantages:
+
+* Can show introns on same plot (in other they would have to be a seperate window)
+* Shows how small FlipIn signal is compared to others
+
+Disadvantages:
+
+* Shows how weak Nxf1 signal is
+* That discontinuity is stil there at the end of the first exon.
+* ChTop is show as having a lower signal in the middle exons rather than a higher signal in the last exon.
+
+Finally once profiles are computed this way, we could show actualy FPKM on the y axis:
+
+```{r, fig.height=1.5, fig.width=4}
+filter(first_mid_last_nonorm, replicate == "union", factor %in% c("Alyref", "Chtop", "Nxf1", "FlipIn"),
+       ) %>%
+#  group_by(factor) %>%
+#  mutate(bin=seq(from=0,to=289,by=1)) %>%
+  group_by(factor) %>%
+  mutate(density=rollmean(density, 3, na.pad=TRUE)) %>%
+  group_by(factor) %>%
+  mutate(density=density/sum(density, na.rm=T)) %>% 
+ggplot() +
+  aes(bin, density, col=factor) +
+  geom_line(size=0.7, alpha=0.9) + 
+  scale_color_manual(values=factor_pal, guide=FALSE) +
+  theme_bw(base_size=10) +
+  geom_vline(xintercept = c(50,70,170,240), lty=2, alpha=0.5) +
+ scale_x_continuous(breaks = c(25,60,120,220,305,365),
+                     labels = c("", "First", "Middle","Introns", "Last", ""),
+                     minor_breaks = NULL,
+                     name=NULL) +
+  scale_y_continuous(breaks=NULL, name="FPKM") -> g
+
+print(g)
+
+```
+
+  
+
+

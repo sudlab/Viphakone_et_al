@@ -199,16 +199,16 @@ class FirstLastExonBoot(ProjectTracker):
                        ON gs.gene_id = cc.gene_id
                       INNER JOIN annotations.gene_info as gi
                        ON cc.gene_id = gi.gene_id
-                      INNER JOIN reference_chunks_gene_first_pc_exons as fe
+                      INNER JOIN reference_chunks_expressed_transcripts_gene_first_pc_exons as fe
                        ON fe.gene_id = cc.gene_id AND
                           fe.exon_id = cc.exon_id
-                      INNER JOIN reference_chunks_gene_last_pc_exons as le
+                      INNER JOIN reference_chunks_expressed_transcripts_gene_last_pc_exons as le
                        ON le.gene_id = cc.gene_id AND
                           le.exon_id = cc.exon_id 
-                      INNER JOIN reference_chunks_exons as ce
+                      INNER JOIN reference_chunks_expressed_exons as ce
                        ON ce.gene_id = cc.gene_id AND
                           ce.exon_id = cc.exon_id
-                      INNER JOIN reference_chunks_introns as ie
+                      INNER JOIN reference_chunks_expressed_introns as ie
                        ON ie.gene_id = cc.gene_id AND
                           ie.exon_id = cc.exon_id
                       INNER JOIN reference_chunks_ngenes as ng
@@ -280,8 +280,10 @@ class DetainedBoot(FirstLastExonBoot):
     statement = '''SELECT DISTINCT cc.gene_id, cc.exon_id,
                                    %(columns)s,
                                    retained,
-                                   exon,
-                                   intron,
+                                   ce.exon as exon,
+                                   ie.intron as intron,
+                                   ee.exon as expressed_exon,
+                                   ei.intron as expressed_intron,
                                    sig
                      FROM chunk_counts as cc
                       INNER JOIN annotations.gene_stats as gs
@@ -300,6 +302,12 @@ class DetainedBoot(FirstLastExonBoot):
                       INNER JOIN reference_chunks_introns as ie
                        ON ie.gene_id = cc.gene_id AND
                           ie.exon_id = cc.exon_id
+                      INNER JOIN reference_chunks_expressed_exons as ee
+                       ON ee.gene_id = cc.gene_id AND
+                          ee.exon_id = cc.exon_id
+                      INNER JOIN reference_chunks_expressed_introns as ei
+                       ON ei.gene_id = cc.gene_id AND
+                          ei.exon_id = cc.exon_id
                       INNER JOIN reference_chunks_ngenes as ng
                        ON ng.gene_id = cc.gene_id AND
                           ng.exon_id = cc.exon_id
@@ -314,9 +322,9 @@ class DetainedBoot(FirstLastExonBoot):
             return "Detained"
         elif row["retained"]==1:
             return "Retained"
-        elif row["intron"]>0 and row["exon"]==0:
+        elif row["expressed_intron"] > 0 and row["exon"] == 0:
             return "Intron"
-        elif  row["intron"] == 0:
+        elif  row["intron"] == 0 and row["expressed_exon"] > 0:
             return "Exon"
         else:
             return None
@@ -329,9 +337,9 @@ class CombinedDeReBoot(DetainedBoot):
             return "Retained"
         elif row["retained"]==1:
             return "Retained"
-        elif row["intron"]>0 and row["exon"]==0:
+        elif row["expressed_intron"]>0 and row["exon"]==0:
             return "Intron"
-        elif  row["intron"] == 0:
+        elif  row["intron"] == 0 and row["expressed_exon"]:
             return "Exon"
         else:
             return None
@@ -368,3 +376,71 @@ class ChTopAPABoot(FirstLastExonBoot):
          else:
              return "No APA"
          
+
+class BiotypesBoot(FirstLastExonBoot):
+
+    statement = '''SELECT DISTINCT cc.gene_id,
+                                   %(columns)s,
+                                   gene_biotype
+                   FROM chunk_counts as cc
+                     INNER JOIN annotations.gene_info as gi
+                       ON gi.gene_id = cc.gene_id
+                     INNER JOIN reference_chunks_exons as ce
+                       ON ce.gene_id = cc.gene_id AND
+                          ce.exon_id = cc.exon_id
+                     INNER JOIN reference_chunks_introns as ci
+                       ON ci.gene_id = cc.gene_id AND
+                          ci.exon_id = cc.exon_id
+                     INNER JOIN reference_chunks_ngenes as ng
+                       ON ng.gene_id = cc.gene_id AND
+                          ng.exon_id = cc.exon_id
+                     
+                   '''
+
+    def __call__(self, track):
+
+        print self.attach
+        if self.data is None:
+            self.fill()
+            self.data = self.data.groupby(["gene_id", "gene_biotype", "grouping"]).sum().reset_index()
+            print "starting with %i genes" % self.data.shape[0]
+            gene_expression = self.getDataFrame(
+                '''SELECT DISTINCT gene_id, TPM
+                   FROM HEK293_salmon as salmon
+                   INNER JOIN annotations.transcript_info as ti
+                    ON salmon.Name = ti.transcript_id
+                 ''')
+            gene_expression = (gene_expression.groupby("gene_id").sum()/2).reset_index()
+            #self.data = self.data[self.data.gene_id.isin(
+            #    gene_expression.gene_id[gene_expression.TPM > 1])]
+            print "kept " + str(self.data.shape[0]) + " genes"
+
+        test = self.track2col[track]
+        control = self.track2control(track)
+        return self.data.groupby("grouping").apply(lambda x: iCLIP.random.ratio_and_ci(x[test], x[control]))
+
+
+    def grouping(self, row):
+
+        keep = ["antisense",
+                "lincRNA",
+                "miRNA",
+                "misc_RNA",
+                "processed_transcript",
+                "protein_coding",
+                "pseudogene",
+                "rRNA",
+                "snRNA",
+                "snoRNA"]
+        
+        if "pseudogene" in row["gene_biotype"]:
+            return "pseudogene"
+        elif row["gene_biotype"] in keep:
+            return row["gene_biotype"]
+        else:
+            return None
+        
+
+class BiotypesBoot2(FirstLastExonBoot):
+
+    statement = '''SELECT DISTINCT '''

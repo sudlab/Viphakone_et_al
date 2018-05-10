@@ -257,7 +257,9 @@ class HistoneMetaGenes(ProjectTracker):
 
     def __call__(self, track, slice=None):
         print "called with %s, %s" % (track,slice)
-        statement = '''SELECT *  FROM histone_profiles WHERE factor = '%(track)s' AND replicate = '%(slice)s' '''
-        return self.getAll(statement % locals())
+        statement = '''SELECT *  FROM histone_profiles WHERE factor = '%(track)s' AND replicate = '%(slice)s' AND geneset != 'non-histones' '''
+        data = self.getDataFrame(statement % locals())
+    #    data["density"] = data.groupby("geneset")["density"].apply(lambda x: x/x.sum())
+        return data
 
 

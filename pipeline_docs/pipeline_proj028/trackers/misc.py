@@ -9,9 +9,9 @@ class CustomisedContextStats(ProjectTracker):
     def getPaths(self):
         tracks = self.getValues("SELECT DISTINCT track from %(table)s")
 
-        paths = [re.match("(.+-.+)[-\.](.+)",x).groups() for x in tracks]
+        paths = [re.match("(.+)-.+[-\.](.+)",x).groups() for x in tracks]
         paths = zip(*paths)
-
+        print paths
         return paths
     
     categories = {"antisense": "Long ncRNA",
@@ -55,7 +55,7 @@ class CustomisedContextStats(ProjectTracker):
 
 class EJCContext(CustomisedContextStats):
 
-    table = "ejc.deduped_context_stats"
+    table = "ejc.clusters_context_stats"
     tag="GFP"
     
 class GeneProfiles3(ProjectTracker):

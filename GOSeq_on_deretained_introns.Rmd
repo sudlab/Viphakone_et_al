@@ -1,0 +1,250 @@
+---
+title: "GOSeq on differentially spliced detained and retained introns. "
+output: html_notebook
+---
+
+This notebook will examine functional entrichment in the differential splicing patterns of detained and retained introns. Differentail splicing analysis was conduced on "chunks" using DEXSeq by running `run_dexseq_all.R`. Chunks corresponding to detained introns were identified using "find_detained_introns.Rmd" notebook. Retained introns were identified using "gtf2gtf --method=get-retained-introns". 
+
+We will compare the prevalence of GO categories inthe genes with differentially spliced introns to the prevalence of categories in all genes with detained/retained introns.
+
+We will correct for length and expression bias by using GOSeq. 
+
+Our first task is to pull the DEXSeq results. 
+```{r}
+library(RSQLite)
+database <- "/ifs/projects/proj028/project_pipeline_iCLIP5/csvdb"
+dbh <- dbConnect(SQLite(), database)
+statement = "SELECT DISTINCT *
+                        FROM  chunk_splicing as dex
+                         INNER JOIN reference_chunks_retained_introns as ri
+                           ON ri.gene_id = dex.groupID AND ri.exon_id = dex.featureID
+                        WHERE dex.track = 'nuclear' AND
+                              genomicData_width >= 10"
+
+dexseq_results = dbGetQuery(dbh,statement)
+```
+
+Detained introns are a bit harder, because we are accepting them if they are detained in either nuclear or total RNAseq. We need to get them as a seperate frame, and then select introns were they are detained in either and then join them to the dexseq_results
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+statement = "SELECT * FROM detained_intron_calls"
+detained = dbGetQuery(dbh, statement)
+
+detained_calls <- detained %>% mutate (detained=!is.na(padj) & padj < 0.01 & log2FoldChange > 2) %>% 
+                  group_by(gene_id, intron_id) %>%
+                  summarise(detained=max(detained, na.rm=TRUE)) %>%
+                  ungroup()
+head(detained_calls)
+```
+
+Now to join into a single dataframe. 
+```{r}
+all_data <- dexseq_results %>% left_join(detained_calls, by=c("gene_id" = "gene_id", "exon_id"="intron_id")) %>% replace_na(list(detained=0))
+```
+
+I think the way we will do this is ask if there are any detained introns in a gene, and the total length of (d/r)etained introns. Lets start with detained introns.
+
+```{r}
+detained_genes <- subset(all_data, detained==1) %>% 
+                  mutate(sig=is.finite(padj) & is.finite(log2fold_Alyref_Control) & padj < 0.05 & log2fold_Alyref_Control < -0.58) %>%
+                  group_by(gene_id) %>% 
+                  summarise(length=sum(genomicData_width), expression = sum(exonBaseMean), sig = max(sig) ) %>% 
+                  ungroup()
+
+head(detained_genes)
+```
+
+Now build the GOSeq PWF object.
+
+```{r}
+library(goseq)
+
+genes <- detained_genes$sig
+names(genes) <- detained_genes$gene_id
+
+bias.data <- detained_genes$length
+names(bias.data) <- detained_genes$gene_id
+
+pwf <- nullp(genes, bias.data = log10(bias.data))
+
+```
+
+Okay, that is very odd. Pretty conclusive that longer introns are not more likely to be significant. In fact quite the opposite. Does the same hold for expression:
+
+```{r}
+bias.data = detained_genes$expression
+names(bias.data) <- detained_genes$gene_id
+
+pwf <- nullp(genes, bias.data=bias.data)
+```
+
+This is more as expected - the more highly expressed, the higher the likelihood of significance. We can now run the goseq
+
+```{r}
+go.detainted.expression <- goseq(pwf,  genome="hg19", id="ensGene")
+go.detainted.expression <- subset(go.detainted.expression, numInCat > 10)
+go.detainted.expression$padj = p.adjust(go.detainted.expression$over_represented_pvalue, method="BH")
+go.detainted.expression$enrichment <- (go.detainted.expression$numDEInCat/sum(genes)) / (go.detainted.expression$numInCat/length(genes))
+head(go.detainted.expression)
+```
+
+So basically nothing. No enrichment of any categories. The only thing that is even close is "positive regulation of cellular compronent biogenes", which is a pretty meaningless term anyway. 
+
+```{r}
+kegg.detainted.expression <- goseq(pwf,  genome="hg19", id="ensGene", test.cats="KEGG")
+kegg.detainted.expression <- subset(kegg.detainted.expression, numInCat > 10)
+kegg.detainted.expression$padj = p.adjust(kegg.detainted.expression$over_represented_pvalue, method="BH")
+kegg.detainted.expression$enrichment <- (kegg.detainted.expression$numDEInCat/sum(genes)) / (kegg.detainted.expression$numInCat/length(genes))
+head(kegg.detainted.expression)
+
+```
+
+Nothing there either.
+
+Let look at the retained genes:
+
+```{r}
+
+retained_genes <- subset(all_data, retained==1) %>% 
+                  mutate(sig=is.finite(padj) & is.finite(log2fold_Alyref_Control) & padj < 0.05 & log2fold_Alyref_Control < -0.58) %>%
+                  group_by(gene_id) %>% 
+                  summarise(length=sum(genomicData_width), expression = sum(exonBaseMean), sig = max(sig) ) %>% 
+                  ungroup()
+head(retained_genes)
+
+```
+
+```{r}
+genes <- retained_genes$sig
+names(genes) <- retained_genes$gene_id
+
+bias.data <- retained_genes$length
+names(bias.data) <- retained_genes$gene_id
+
+pwf <- nullp(genes, bias.data = bias.data)
+
+```
+
+Okay, so with the retained genes there is a very definate relationship with length. What about expression:
+
+```{r}
+bias.data = retained_genes$expression
+names(bias.data) <- retained_genes$gene_id
+
+pwf <- nullp(genes, bias.data=bias.data)
+```
+
+That as well. In fact its really quite a large fraction once you get to the highest expressed. Is there a correlation?
+
+```{r}
+model <- glm(sig~ log(expression+0.1) * log(length) , data=retained_genes, family=binomial("logit"))
+retained_genes$preds = predict(model, type="response")
+print(anova(model, test="Chisq"))
+```
+
+```{r}
+library(ggplot2)
+ggplot(retained_genes) + aes(log(expression+0.1), sig) +  geom_point(aes(y=preds)) + stat_smooth() +  coord_cartesian(ylim=c(-0.1,1.1)) 
+```
+
+SO there is definately additional information in expression vs length. 
+
+```{r}
+go.retainted.expression <- goseq(pwf,  genome="hg19", id="ensGene", test.cats="GO:BP")
+go.retainted.expression <- subset(go.retainted.expression, numInCat > 10)
+go.retainted.expression$padj = p.adjust(go.retainted.expression$over_represented_pvalue, method="BH")
+go.retainted.expression$enrichment <- (go.retainted.expression$numDEInCat/sum(genes)) / (go.retainted.expression$numInCat/length(genes))
+head(subset(go.retainted.expression, padj < 0.01 & enrichment > 1.5))
+
+```
+
+Lets look at the categories if we combine them. 
+
+```{r}
+
+deretained_genes <- subset(all_data, retained==1 | detained==1) %>% 
+                  mutate(sig=is.finite(padj) & is.finite(log2fold_Alyref_Control) & padj < 0.05 & log2fold_Alyref_Control < -0.58) %>%
+                  group_by(gene_id) %>% 
+                  summarise(length=sum(genomicData_width), expression = sum(exonBaseMean), sig = max(sig) ) %>% 
+                  ungroup()
+head(deretained_genes)
+
+```
+
+With expression as the bias data:
+```{r}
+genes <- deretained_genes$sig
+names(genes) <- deretained_genes$gene_id
+
+bias.data = deretained_genes$expression
+names(bias.data) <- deretained_genes$gene_id
+
+pwf <- nullp(genes, bias.data=bias.data)
+
+```
+
+That looks exactly like the other plots. Hardly surprising
+
+with length as bias data:
+
+```{r}
+
+genes <- deretained_genes$sig
+names(genes) <- deretained_genes$gene_id
+
+bias.data <- deretained_genes$length
+names(bias.data) <- deretained_genes$gene_id
+
+pwf <- nullp(genes, bias.data = bias.data)
+
+```
+
+Well, thats a bit of a funny shape, but its definately not independent. 
+
+Now the enrichment analysis:
+
+```{r}
+
+genes <- deretained_genes$sig
+names(genes) <- deretained_genes$gene_id
+
+bias.data <- deretained_genes$expression
+names(bias.data) <- deretained_genes$gene_id
+
+pwf <- nullp(genes, bias.data = bias.data, plot.fit = FALSE)
+go.deretainted.expression <- goseq(pwf,  genome="hg19", id="ensGene", test.cats = "GO:BP")
+go.deretainted.expression <- subset(go.deretainted.expression, numInCat > 10)
+go.deretainted.expression$padj = p.adjust(go.deretainted.expression$over_represented_pvalue, method="BH")
+go.deretainted.expression$enrichment <- (go.deretainted.expression$numDEInCat/sum(genes)) / (go.deretainted.expression$numInCat/length(genes))
+head(subset(go.deretainted.expression,enrichment > 1.5), n=20)
+
+```
+
+I wonder if we are being swamped by GO terms, and if using GO Slim might be both more interpretable and more powerful.
+
+Get GO Slim terms:
+```{r}
+# from this https://support.bioconductor.org/p/58279/
+
+# First get the GOslim terms from biomart 
+library("biomaRt") 
+ensembl = useMart("ensembl",dataset="hsapiens_gene_ensembl") 
+go_slim=getBM(attributes="goslim_goa_accession",mart=ensembl)[,1]
+
+# Now get the mapping between genes and all GO terms 
+go=getgo(names(genes),"hg19","ensGene")
+
+# Filter the list for only GOslim terms 
+go_slim2cat=lapply(go,function(x){ x[x %in% go_slim] })
+```
+
+
+Now r
+
+
+
+
+

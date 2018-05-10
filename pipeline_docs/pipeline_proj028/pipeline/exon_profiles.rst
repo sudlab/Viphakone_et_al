@@ -12,7 +12,30 @@ by sum after averaging. The final displayed profiles have been smoothed with a 3
 
    Metagene profiles at exon boundarys
 
+.. report:: GeneProfiles.ExonBoundaryProfiles
+   :render: r-ggplot
+   :groupby: all
+   :slices: union
+   :tracks: r(FLAG)
+   :plot-width: 6
+   :plot-height: 1.5
+   :statement: aes(x=position, y=density, col=track) + geom_hline(yintercept=0.005, lty=2, alpha=0.5) + geom_vline(xintercept=0, lty=2, alpha=0.5) + geom_line() + facet_wrap(~track, labeller=labeller(track=function(x) {x<-gsub("-.+","",x); return(gsub("FlipIn", "Cntrl", x))}), nrow=1) + theme_bw(base_size=9) + theme(strip.background=element_blank(), aspect.ratio=1) + scale_y_continuous(breaks=NULL, name="Relative read density") + coord_cartesian(ylim=c(0.003,0.0075)) + scale_x_continuous(breaks=c(-100,-50,0,50,100), name="Distance from Exon-Exon junction") + scale_color_manual(values=c("Alyref-FLAG"="#D55E00", "Chtop-FLAG"="#009E73", "Nxf1-FLAG"="#CC79A7", "eIF4A3-GFP"="#E69F00", "PTB-GFP"="#999999", "BTZ-GFP"="#0072B2", "UPF3B-GFP"="#0072B2", "RNPS1-GFP"="#F0E442", "FlipIn-FLAG"="#56B4E9"), guide=FALSE) 
 
+   Metagene profiles at exon boundarys
+
+
+.. report:: GeneProfiles.ExonBoundaryProfiles
+   :render: r-ggplot
+   :groupby: all
+   :slices: union
+   :tracks: eIF4A3-GFP,BTZ-GFP
+   :plot-width: 3
+   :plot-height: 2
+   :statement: aes(x=position, y=density, col=track) +  geom_hline(yintercept=0.005, lty=2, alpha=0.5) + geom_vline(xintercept=0, lty=2, alpha=0.5) + geom_line() + facet_wrap(~track, labeller=labeller(track=function(x) {x<-gsub("-.+","",x); return(gsub("FlipIn", "Cntrl", x))}), nrow=1) + theme_bw(base_size=9) + theme(strip.background=element_blank(), aspect.ratio=1) + scale_y_continuous(breaks=NULL, name="Relative read density") + scale_x_continuous(breaks=c(-100,-50,0,50,100), name="Distance from Exon-Exon junction") + scale_color_manual(values=c("Alyref-FLAG"="#D55E00", "Chtop-FLAG"="#009E73", "Nxf1-FLAG"="#CC79A7", "eIF4A3-GFP"="#E69F00", "PTB-GFP"="#999999", "BTZ-GFP"="#0072B2", "UPF3B-GFP"="#0072B2", "RNPS1-GFP"="#F0E442", "FlipIn-FLAG"="#56B4E9"), guide=FALSE)
+
+   Metagene profiles at exon boundarys
+
+   
 transcriptome mapping
 ---------------------------
 
