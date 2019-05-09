@@ -2438,3 +2438,24 @@ def calculateSplicingIndex(bamfile, gtffile, outfile):
                    + "\n")
 
     
+@cluster_runnable
+def geneset_without_last_exons(infile, outfile):
+
+    outfile = IOTools.openFile(outfile, "w")
+    for transcript in GTF.transcript_iterator(GTF.iterator(IOTools.openFile(infile))):
+
+        exons = [e for e in transcript if e.feature == "exon"]
+        exons = sorted(exons, key=lambda x: x.start)
+
+        if len(exons) == 1:
+            continue
+        
+        if exons[0].strand == "+":
+            outfile.write("\n".join(map(str, exons[:-1])) + "\n")
+        elif exons[0].strand=="-":
+            outfile.write("\n".join(map(str, exons[1:])) + "\n")
+
+    outfile.close()
+    
+
+    

@@ -444,3 +444,64 @@ class BiotypesBoot(FirstLastExonBoot):
 class BiotypesBoot2(FirstLastExonBoot):
 
     statement = '''SELECT DISTINCT '''
+
+class FirstLastExonBootChromRNA(FirstLastExonBoot):
+
+    def track2control(self, track):
+        return "HEK293_WT_1"
+
+    def fill(self):
+
+        print "filling data...",
+        self.getTracks()
+        
+        columns = self.track2col.values()
+        
+        columns = ",".join(columns)
+        columns = columns + ", HEK293_WT_1"
+        self.data = self.getDataFrame(self.statement)
+        print self.statement % locals()
+        self.data["grouping"] = self.data.apply(self.grouping, axis=1)
+        self.data = self.data[self.data.grouping.notnull()]
+        print "done"
+
+class FirstLastExonBootNucRNA(FirstLastExonBoot):
+
+    def track2control(self, track):
+        return "Nuclear_RiboZ_R1"
+
+    def fill(self):
+
+        print "filling data...",
+        self.getTracks()
+        
+        columns = self.track2col.values()
+        
+        columns = ",".join(columns)
+        columns = columns + ", Nuclear_RiboZ_R1"
+        self.data = self.getDataFrame(self.statement)
+        print self.statement % locals()
+        self.data["grouping"] = self.data.apply(self.grouping, axis=1)
+        self.data = self.data[self.data.grouping.notnull()]
+        print "done"
+
+
+class FirstLastExonBootTotalRNA(FirstLastExonBoot):
+
+    def track2control(self, track):
+        return "Total_RiboZ_R1"
+
+    def fill(self):
+
+        print "filling data...",
+        self.getTracks()
+        
+        columns = self.track2col.values()
+        
+        columns = ",".join(columns)
+        columns = columns + ", Total_RiboZ_R1"
+        self.data = self.getDataFrame(self.statement)
+        print self.statement % locals()
+        self.data["grouping"] = self.data.apply(self.grouping, axis=1)
+        self.data = self.data[self.data.grouping.notnull()]
+        print "done"

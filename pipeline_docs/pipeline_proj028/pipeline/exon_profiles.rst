@@ -35,6 +35,16 @@ by sum after averaging. The final displayed profiles have been smoothed with a 3
 
    Metagene profiles at exon boundarys
 
+.. report:: GeneProfiles.ExonBoundaryProfiles
+   :render: r-ggplot
+   :groupby: all
+   :slices: union
+   :tracks: HeLa-Alyref
+   :plot-width: 3
+   :plot-height: 2
+   :statement: aes(x=position, y=density) + geom_hline(yintercept=0.005, lty=2, alpha=0.5) + geom_vline(xintercept=0, lty=2, alpha=0.5) + geom_line() + facet_wrap(~track, labeller=labeller(track=function(x) {x<-gsub("-.+","",x); return(gsub("FlipIn", "Cntrl", x))}), nrow=1) + theme_bw(base_size=9) + theme(strip.background=element_blank(), aspect.ratio=1) + scale_y_continuous(breaks=NULL, name="Relative read density") + coord_cartesian(ylim=c(0.003,0.0075)) + scale_x_continuous(breaks=c(-100,-50,0,50,100), name="Distance from Exon-Exon junction")  
+
+   Metagene profiles at exon boundarys
    
 transcriptome mapping
 ---------------------------

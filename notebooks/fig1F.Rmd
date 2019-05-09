@@ -1,6 +1,8 @@
 ---
-title: "Fig 1F lower panel: Meta genes over UTRs, CDS and flank"
-output: 
+title: 'Fig 1F lower panel: Meta genes over UTRs, CDS and flank'
+output:
+  html_document:
+    df_print: paged
   html_notebook:
     code_folding: hide
 ---
@@ -11,7 +13,10 @@ The first way is to split out into 5' UTR, 3' UTR and CDS. These are now effecti
 The results are below:
 ```{r}
 library(RSQLite)
-iclip_metagenes <- dbGetQuery(dbConnect(SQLite(), "../csvdb"), "SELECT * FROM iclip_utrprofiles")
+library(dplyr)
+library(zoo)
+library(ggplot2)
+iclip_metagenes <- dbGetQuery(dbConnect(SQLite(), "/ifs/projects/proj028/project_pipeline_iCLIP5/csvdb"), "SELECT * FROM iclip_utrprofiles")
 cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
 factor_pal = c("Alyref"=cbPalette[7],
                "Chtop"=cbPalette[4],

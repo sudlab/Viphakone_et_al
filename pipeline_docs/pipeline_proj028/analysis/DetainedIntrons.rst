@@ -192,3 +192,20 @@ Or only bound and not bound.
 
    Enrichment of retained introns in changes on TREX knockdown.
    
+
+The tables of the genes in these plots are here:
+
+.. report:: RetainedIntrons.DetainedChunkSplicingTable
+   :render: table
+   :tracks: nuclear
+   :large: xls
+
+   Differentailly retained Detained introns
+
+
+.. report:: RetainedIntrons.RetainedChunkSplicingTable
+   :render: table
+   :tracks: nuclear
+   :large: xls
+
+   Differentailly retained Retained introns

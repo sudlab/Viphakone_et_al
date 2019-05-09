@@ -1,7 +1,8 @@
 from ProjectTracker import *
 from scipy.stats import hypergeom
 #import CGATReport.Tracker.TrackerMultipleLists as TrackerMultipleLists
-
+import pandas as pd
+import numpy as np
 
 class UpregulatedRetainedIntrons(TrackerMultipleLists, ProjectTracker):
 
@@ -307,3 +308,28 @@ class CountDiffChunks(ProjectTracker):
                           AND track='%(track)s' '''
 
         return self.getValue(statement % locals())
+
+
+class ChunkSplicingTable(ChunkSplicing):
+
+    slices = None
+    tracks = ["nuclear", "cytoplasmic", "total", "chtop"]
+    
+    def __call__(self, track):
+
+        df1 = ChunkSplicing.__call__(self, "not",  track)
+        df2 = ChunkSplicing.__call__(self, " ", track)
+        df = pandas.concat([df1,df2])
+        df["Alyref_binding"] = pd.cut(np.log2((df.clip_tags/df.genomicData_width) + 1e-5), bins=3, labels=["Low", "Medium", "High"])
+        df = df[df[self.intron_set]]
+        df=  df[df.padj.notnull() & df.l2fold.notnull() & (df.padj < 0.1) & (df.l2fold < -0.58)]
+
+        df = df[["symbol","groupID", "contig","intron_start", "intron_end", "Alyref_binding", "padj", "l2fold"]]
+
+        return df
+
+class RetainedChunkSplicingTable(ChunkSplicingTable, RetainedChunkSplicing):
+    pass
+
+class DetainedChunkSplicingTable(ChunkSplicingTable, DetainedChunkSplicing):
+    pass

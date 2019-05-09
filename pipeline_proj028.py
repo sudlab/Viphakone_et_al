@@ -373,7 +373,8 @@ def filterExpressedTranscripts(infiles, outfile):
     P.run()
 
 @follows(mkdir("gene_clip_counts.dir"))
-@transform(os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
+@transform([os.path.join(PARAMS["iclip_dir"], "deduped.dir/*.bam"),
+            os.path.join(PARAMS["ejc_iclip_dir"], "deduped.dir/*.bam")],
            formatter(),
            add_inputs(filterExpressedTranscripts),
            r"gene_clip_counts.dir/{basename[0]}.expressed_gene_counts.tsv.gz")
@@ -5342,6 +5343,14 @@ def load_chtop_apa_chunks(infile, outfile):
                                 ON reference_chunks_chtop_apa(gene_id, exon_id)''')
 
 
+@transform(os.path.join(PARAMS["annotations_dir"],
+                        PARAMS_ANNOTATIONS["interface_geneset_all_gtf"]),
+           formatter(),
+           r"transcripts_without_last_exon.gtf.gz")
+def get_transcripts_exon_last_exons(infile, outfile):
+
+    PipelineProj028.geneset_without_last_exons(infile, outfile)
+           
     
 ###################################################################
 @follows(mkdir("splicing_ratios.dir"))

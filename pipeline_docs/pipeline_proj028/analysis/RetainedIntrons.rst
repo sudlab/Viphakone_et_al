@@ -177,4 +177,3 @@ Looking at read through and inaccurate termination is on my list of things to do
 
 As you can see there is no evidence here for a general lenghening of transcripts (as would be evidenced by an increaed signal in the downstream region). That doesn't mean something won't emerge from a closer examination. 
 
-
